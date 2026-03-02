@@ -883,10 +883,10 @@ python nested_performance_test.py -c single_threaded -r 3
 To generate an API change report comparing the current build against a previous release:
 
 ```shell
-./mvnw japicmp:cmp -pl :hardwood-core -Djapicmp.oldVersion=<PREVIOUS_VERSION>
+./mvnw package japicmp:cmp -pl :hardwood-core -DskipTests -Djapicmp.oldVersion=<PREVIOUS_VERSION>
 ```
 
-The report is written to `core/target/japicmp/`. Internal packages (`dev.hardwood.internal`) are excluded. This is run automatically during releases.
+The `package` phase is needed to build the current jar before comparing. The report is written to `core/target/japicmp/`. Internal packages (`dev.hardwood.internal`) are excluded. This is run automatically during releases.
 
 #### JMH Micro-Benchmarks
 

@@ -86,7 +86,7 @@ git checkout -b "release/${RELEASE_VERSION}"
 
 echo "Generating API change report..."
 JAPICMP_OLD_VERSION="$(sed -n 's/^Latest version: \([^,]*\),.*/\1/p' README.md)"
-./mvnw -ntp -B japicmp:cmp -pl :hardwood-core -Djapicmp.oldVersion="${JAPICMP_OLD_VERSION}"
+./mvnw -ntp -B package japicmp:cmp -pl :hardwood-core -DskipTests -Djapicmp.oldVersion="${JAPICMP_OLD_VERSION}"
 
 # -- Update README versions and date -----------------------------------------
 
