@@ -319,7 +319,7 @@ jobs:
           git tag -f 1.0-early-access
           git push -f origin 1.0-early-access
           gh release create 1.0-early-access \
-            --title "1.0-early-access" \
+            --title "1.0-early-access (CLI)" \
             --notes "Early-access build of the \`hardwood\` CLI, updated on every push to \`main\`.
 
           > **Warning**: This is a pre-release build and may be unstable.
