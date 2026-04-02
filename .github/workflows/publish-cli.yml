@@ -48,6 +48,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
+      - name: 'Set release version'
+        run: ./mvnw -ntp -B versions:set "-DnewVersion=${{ inputs.release-version }}" -DgenerateBackupPoms=false
+
       - name: 'Build Native Image'
         run: ./mvnw -ntp -B -Dnative package -pl cli -am -DskipTests "-Ddist.qualifier=${{ inputs.release-version }}"
 
