@@ -51,12 +51,13 @@ See the [Getting Started](https://hardwood.dev/latest/getting-started/) guide fo
 
 ## Contributing
 
-Contributions are welcome! Please file bugs and feature requests on the [issue tracker](https://github.com/hardwood-hq/hardwood/issues).
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide — how to find work, the issue-first workflow, commit message format, and PR expectations.
 
-Note that while this project welcomes the usage of LLMs,
-vibe coding (i.e. blindly accepting AI-generated changes without understanding them) is not accepted.
-While there's currently a focus on quick iteration (closing feature gaps),
-the aspiration is to build a high quality code base which is maintainable, extensible, performant, and safe.
+- File bugs and feature requests on the [issue tracker](https://github.com/hardwood-hq/hardwood/issues).
+- Ask questions or discuss ideas on [GitHub Discussions](https://github.com/hardwood-hq/hardwood/discussions).
+- Looking for something to work on? Browse [`good first issue`](https://github.com/hardwood-hq/hardwood/labels/good%20first%20issue) and [`help wanted`](https://github.com/hardwood-hq/hardwood/labels/help%20wanted).
+
+LLM-assisted contributions are welcome, but vibe coding — accepting AI-generated changes without understanding them — is not. The aspiration is a high-quality, maintainable, performant, safe codebase.
 
 See [ROADMAP.md](ROADMAP.md) for the detailed implementation status, roadmap, and milestones.
 
