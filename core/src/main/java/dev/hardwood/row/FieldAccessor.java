@@ -116,12 +116,18 @@ public interface FieldAccessor {
     /// @throws IllegalArgumentException if the field type is not UUID
     UUID getUuid(String name);
 
-    /// Get an Interval field value by name.
+    /// Get an INTERVAL field value by name.
+    ///
+    /// The Parquet `INTERVAL` logical type stores three independent components
+    /// (months, days, milliseconds) as little-endian unsigned 32-bit integers in
+    /// a 12-byte FIXED_LEN_BYTE_ARRAY. The components are not normalized into a
+    /// single duration. See [PqInterval] for unsigned-int handling.
     ///
     /// @param name the field name
-    /// @return the Interval value, or null if the field is null
-    /// @throws IllegalArgumentException if the field type is not Interval
+    /// @return the interval value, or null if the field is null
+    /// @throws IllegalArgumentException if the field type is not INTERVAL
     PqInterval getInterval(String name);
+
     // ==================== Variant ====================
 
     /// Get a VARIANT field value by name. Works both for a Parquet group annotated

@@ -7,9 +7,20 @@
  */
 package dev.hardwood.row;
 
-/// Representation of Interval Logical Type
+/// Value type for the Parquet `INTERVAL` logical type.
 ///
-/// @param months       number of months
-/// @param days         number of days
-/// @param milliseconds number of milliseconds
+/// The three components are stored independently — they are **not** normalized
+/// (e.g. 90 days is not converted to ~3 months) because the calendar semantics
+/// of months and days vary. The on-disk encoding is a 12-byte
+/// FIXED_LEN_BYTE_ARRAY: three little-endian **unsigned** 32-bit integers in
+/// the order `months`, `days`, `milliseconds`.
+///
+/// **Unsigned semantics:** Java has no unsigned `int` type, so values greater
+/// than `Integer.MAX_VALUE` will appear negative when read directly. To recover
+/// the unsigned value, use `Integer.toUnsignedLong(interval.months())` (and the
+/// same for `days()` / `milliseconds()`).
+///
+/// @param months       number of months (unsigned 32-bit)
+/// @param days         number of days (unsigned 32-bit)
+/// @param milliseconds number of milliseconds (unsigned 32-bit)
 public record PqInterval(int months, int days, int milliseconds) {}

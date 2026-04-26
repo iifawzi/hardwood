@@ -11,7 +11,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import dev.hardwood.internal.util.StringToIntMap;
+import dev.hardwood.metadata.ConvertedType;
 import dev.hardwood.metadata.FieldPath;
+import dev.hardwood.metadata.LogicalType;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.metadata.RepetitionType;
 import dev.hardwood.metadata.SchemaElement;
@@ -184,6 +186,7 @@ public class FileSchema {
             if (element.isPrimitive()) {
                 // Primitive node - represents an actual column
                 int colIdx = columnIndex[0]++;
+                LogicalType effectiveLogicalType = effectiveLogicalType(element);
                 columns.add(new ColumnSchema(
                         new FieldPath(List.copyOf(currentPath)),
                         element.type(),
@@ -192,13 +195,13 @@ public class FileSchema {
                         colIdx,
                         defLevel,
                         repLevel,
-                        element.logicalType()));
+                        effectiveLogicalType));
 
                 children.add(new SchemaNode.PrimitiveNode(
                         element.name(),
                         element.type(),
                         repType,
-                        element.logicalType(),
+                        effectiveLogicalType,
                         colIdx,
                         defLevel,
                         repLevel));
@@ -237,6 +240,21 @@ public class FileSchema {
         }
 
         return children;
+    }
+
+    /// Resolve the effective logical type of a primitive element, falling back
+    /// to the legacy `converted_type` annotation when the modern logical-type
+    /// union is absent. Older writers (parquet-mr, Spark, Hive) only set
+    /// `converted_type=INTERVAL`, which would otherwise leave the column
+    /// unrecognized by typed accessors like `getInterval`.
+    private static LogicalType effectiveLogicalType(SchemaElement element) {
+        if (element.logicalType() != null) {
+            return element.logicalType();
+        }
+        if (element.convertedType() == ConvertedType.INTERVAL) {
+            return new LogicalType.IntervalType();
+        }
+        return null;
     }
 
     /// Validate a Variant-annotated group's shape: required `metadata` binary

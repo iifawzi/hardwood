@@ -2174,3 +2174,21 @@ annotate_column_as_interval('core/src/test/resources/interval_logical_type_test.
 print("\nGenerated interval_logical_type_test.parquet:")
 print("  - Schema: id INT32, duration FIXED_LEN_BYTE_ARRAY(12) annotated INTERVAL")
 print("  - 3 rows: (1mo,15d,1h), (0mo,30d,0ms), null")
+
+# Same shape as above, but annotated with the legacy `converted_type=INTERVAL` only
+# (no modern LogicalType union member). Mirrors files from parquet-mr / Spark / Hive
+# predating the LogicalType union; verifies the schema-builder fallback.
+pq.write_table(
+    interval_table,
+    'core/src/test/resources/interval_legacy_converted_type_test.parquet',
+    use_dictionary=False,
+    compression=None,
+    data_page_version='1.0',
+)
+annotate_column_as_interval(
+    'core/src/test/resources/interval_legacy_converted_type_test.parquet',
+    'duration',
+    legacy_only=True)
+
+print("\nGenerated interval_legacy_converted_type_test.parquet:")
+print("  - Same data, only the legacy converted_type=INTERVAL annotation set")

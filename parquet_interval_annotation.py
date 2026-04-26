@@ -183,8 +183,14 @@ struct FileMetaData {
 _parquet = thriftpy2.load_fp(io.StringIO(_PARQUET_IDL), module_name="_parquet_interval_patch_thrift")
 
 
-def annotate_column_as_interval(path: str, column_name: str) -> None:
-    """Rewrite `path` so that the named FIXED_LEN_BYTE_ARRAY(12) column carries the INTERVAL logical type."""
+def annotate_column_as_interval(path: str, column_name: str, *, legacy_only: bool = False) -> None:
+    """Rewrite `path` so that the named FIXED_LEN_BYTE_ARRAY(12) column carries the INTERVAL annotation.
+
+    By default writes the modern `LogicalType.IntervalType` union (field 9). When
+    `legacy_only=True`, writes only the legacy `converted_type=INTERVAL` (value 21)
+    and clears any modern `logicalType` — simulating files from older writers
+    (parquet-mr, Spark, Hive) that predate the LogicalType union.
+    """
     with open(path, 'rb') as f:
         raw = f.read()
 
@@ -202,7 +208,11 @@ def annotate_column_as_interval(path: str, column_name: str) -> None:
     matched = False
     for el in md.schema:
         if el.name == column_name:
-            el.logicalType = _parquet.LogicalType(INTERVAL=_parquet.IntervalType())
+            if legacy_only:
+                el.logicalType = None
+                el.converted_type = 21  # ConvertedType.INTERVAL
+            else:
+                el.logicalType = _parquet.LogicalType(INTERVAL=_parquet.IntervalType())
             matched = True
             break
     if not matched:

@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
+import dev.hardwood.internal.conversion.LogicalTypeConverter;
 import dev.hardwood.metadata.LogicalType;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.reader.ParquetFileReader;
@@ -23,6 +24,7 @@ import dev.hardwood.row.PqInterval;
 import dev.hardwood.schema.ColumnSchema;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class IntervalLogicalTypeTest {
@@ -85,5 +87,41 @@ class IntervalLogicalTypeTest {
     @Test
     void testNullFieldReturnsNull() {
         assertThat(row2).isNull();
+    }
+
+    @Test
+    void testConvertToIntervalRejectsWrongPhysicalType() {
+        assertThatThrownBy(() ->
+                LogicalTypeConverter.convertToInterval(0L, PhysicalType.INT64))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("FIXED_LEN_BYTE_ARRAY");
+    }
+
+    @Test
+    void testConvertToIntervalRejectsWrongByteLength() {
+        assertThatThrownBy(() ->
+                LogicalTypeConverter.convertToInterval(new byte[8], PhysicalType.FIXED_LEN_BYTE_ARRAY))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("12 bytes");
+    }
+
+    /// Files written by older parquet-mr / Spark / Hive set only the legacy
+    /// `converted_type=INTERVAL` annotation, not the modern `LogicalType.IntervalType`
+    /// union member. The schema builder must promote those to `IntervalType` so
+    /// that `getInterval` works against such files.
+    @Test
+    void testLegacyConvertedTypeIsPromotedToIntervalLogicalType() throws IOException {
+        Path legacyFile = Paths.get("src/test/resources/interval_legacy_converted_type_test.parquet");
+        try (ParquetFileReader fileReader = ParquetFileReader.open(InputFile.of(legacyFile));
+             RowReader rowReader = fileReader.createRowReader()) {
+            ColumnSchema column = fileReader.getFileSchema().getColumn("duration");
+            assertThat(column.logicalType()).isInstanceOf(LogicalType.IntervalType.class);
+
+            rowReader.next();
+            PqInterval first = rowReader.getInterval("duration");
+            assertThat(first.months()).isEqualTo(1);
+            assertThat(first.days()).isEqualTo(15);
+            assertThat(first.milliseconds()).isEqualTo(3_600_000);
+        }
     }
 }

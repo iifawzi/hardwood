@@ -156,7 +156,7 @@ All accessor methods are available in two forms:
 
 All methods are available as both `method(name)` and `method(index)`, except `getStruct`, `getList`, `getMap`, and `getVariant` which are name-based only.
 
-**INTERVAL columns:** `PqInterval` is a plain record with three int properties — `months()`, `days()`, and `milliseconds()`. If unsigned semantics are required, use `Integer.toUnsignedLong(interval.months())`.
+**INTERVAL columns:** `PqInterval` is a plain record with three int properties — `months()`, `days()`, and `milliseconds()`. The components are independent and not normalized, and the on-disk encoding stores each as an unsigned 32-bit integer; if values may exceed `Integer.MAX_VALUE`, recover the unsigned value via `Integer.toUnsignedLong(interval.months())`. Files written by older parquet-mr / Spark / Hive writers that set only the legacy `converted_type=INTERVAL` annotation are handled transparently — no caller-side opt-in is required.
 
 **Bare `BYTE_ARRAY` columns:** `BYTE_ARRAY` columns without a `STRING` logical type annotation may hold arbitrary binary payloads (Protobuf, WKB, custom encodings). Generic accessors such as `PqList.get` and `PqList.iterator` surface these as `byte[]` rather than silently UTF-8 decoding them — invalid byte sequences would otherwise be replaced with `U+FFFD`. Call `getString` explicitly when the column is known to contain UTF-8 text from an older writer that omitted the `STRING` annotation.
 

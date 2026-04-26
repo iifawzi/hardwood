@@ -404,21 +404,23 @@ public final class FlatRowReader implements RowReader {
 
     @Override
     public PqInterval getInterval(int columnIndex) {
-      if (isNull(columnIndex)) {
-          return null;
-      }
-
-      try {
-          return LogicalTypeConverter.convertToInterval(
-                  ((byte[][]) flatValueArrays[columnIndex])[rowIndex],
-                  physicalTypes[columnIndex]);
-      } catch(RuntimeException e) {
-          throw ExceptionContext.addFileContext(currentFileName, e);
-      }
+        if (isNull(columnIndex)) {
+            return null;
+        }
+        try {
+            return LogicalTypeConverter.convertToInterval(
+                    ((byte[][]) flatValueArrays[columnIndex])[rowIndex],
+                    physicalTypes[columnIndex]);
+        }
+        catch (RuntimeException e) {
+            throw ExceptionContext.addFileContext(currentFileName, e);
+        }
     }
 
     @Override
-    public PqInterval getInterval(String name) { return getInterval(resolveIndex(name)); }
+    public PqInterval getInterval(String name) {
+        return getInterval(resolveIndex(name));
+    }
 
     // ==================== Generic Value ====================
 
