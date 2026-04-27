@@ -15,7 +15,7 @@ import uuid
 import shutil
 from pathlib import Path
 
-from parquet_annotators import annotate_column_as_bson, annotate_group_as_variant, annotate_column_as_interval
+from parquet_annotators import annotate_column_as_bson, annotate_group_as_variant, annotate_column_as_interval, strip_converted_type
 
 
 def _copy_if_exists(src: Path, dst: str, prereq_hint: str) -> bool:
@@ -2267,3 +2267,40 @@ else:
     print(f"  Source not found: {yellow_source}")
     print("  Hint: build performance-testing/test-data-setup so TaxiDataDownloader")
     print("        populates target/tlc-trip-record-data/yellow_tripdata_2025-01.parquet")
+
+# LIST annotation recognition test files.
+# Two variants of the same data: both annotations (PyArrow default) and modern-only
+# (logicalType only, no converted_type). The modern-only variant is the regression
+# case for LogicalTypeReader field ID 3.
+_list_ann_base = 'core/src/test/resources/list_annotation_both_test.parquet'
+_list_schema = pa.schema([
+    ('id', pa.int32(), False),
+    ('tags', pa.list_(pa.field('element', pa.string()))),
+])
+_list_data = pa.table({
+    'id': pa.array([1, 2], type=pa.int32()),
+    'tags': pa.array([['hello', 'world'], None], type=pa.list_(pa.field('element', pa.string()))),
+}, schema=_list_schema)
+pq.write_table(_list_data, _list_ann_base, use_dictionary=False, compression=None, data_page_version='1.0')
+strip_converted_type(_list_ann_base, 'core/src/test/resources/list_annotation_modern_only_test.parquet', 'tags')
+
+print("\nGenerated list_annotation_both/modern_only_test.parquet:")
+print("  - Schema: id INT32, tags LIST<STRING>")
+
+# MAP annotation recognition test files.
+# Two variants: both annotations (PyArrow default) and modern-only (logicalType only).
+# The modern-only variant is the regression case for LogicalTypeReader field ID 2.
+_map_ann_base = 'core/src/test/resources/map_annotation_both_test.parquet'
+_map_schema = pa.schema([
+    ('id', pa.int32(), False),
+    ('attrs', pa.map_(pa.string(), pa.int32())),
+])
+_map_data = pa.Table.from_pylist([
+    {'id': 1, 'attrs': [('a', 1), ('b', 2)]},
+    {'id': 2, 'attrs': None},
+], schema=_map_schema)
+pq.write_table(_map_data, _map_ann_base, use_dictionary=False, compression=None, data_page_version='1.0')
+strip_converted_type(_map_ann_base, 'core/src/test/resources/map_annotation_modern_only_test.parquet', 'attrs')
+
+print("\nGenerated map_annotation_both/modern_only_test.parquet:")
+print("  - Schema: id INT32, attrs MAP<STRING, INT32>")

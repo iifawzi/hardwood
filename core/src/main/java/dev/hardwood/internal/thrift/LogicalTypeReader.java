@@ -42,6 +42,14 @@ public class LogicalTypeReader {
                         reader.skipField(header.type()); // Empty struct
                         yield new LogicalType.StringType();
                     }
+                    case 2 -> { // MAP
+                        reader.skipField(header.type()); // Empty Struct
+                        yield new LogicalType.MapType();
+                    }
+                    case 3 -> { // LIST
+                        reader.skipField(header.type()); // Empty Struct
+                        yield new LogicalType.ListType();
+                    }
                     case 4 -> { // ENUM
                         reader.skipField(header.type()); // Empty struct
                         yield new LogicalType.EnumType();
@@ -71,7 +79,7 @@ public class LogicalTypeReader {
                         yield new LogicalType.UuidType();
                     }
                     case 16 -> readVariantType(reader);
-                    // Skip unsupported types (MAP, LIST, etc.)
+                    // Skip unsupported types (NullType, Float16Type, etc..)
                     default -> {
                         reader.skipField(header.type());
                         yield null;

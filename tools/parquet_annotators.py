@@ -23,6 +23,7 @@ union, is modelled in the embedded IDL.
 """
 
 import io
+import shutil
 import struct
 
 import thriftpy2
@@ -276,7 +277,6 @@ def annotate_group_as_variant(path: str, group_name: str, spec_version: int = 1)
 
     _write_parquet_footer(path, data_before_footer, file_metadata)
 
-
 def annotate_column_as_interval(path: str, column_name: str, *, legacy_only: bool = False) -> None:
     """Rewrite `path` so that the named FIXED_LEN_BYTE_ARRAY(12) column carries the INTERVAL annotation.
 
@@ -301,3 +301,23 @@ def annotate_column_as_interval(path: str, column_name: str, *, legacy_only: boo
         raise ValueError(f"Column {column_name!r} not found in {path}")
 
     _write_parquet_footer(path, data_before_footer, file_metadata)
+
+def _find_outer_group(file_metadata, field_name: str):
+    """Return the SchemaElement for the top-level group named `field_name`."""
+    for el in file_metadata.schema:
+        if el.name == field_name and el.num_children is not None:
+            return el
+    raise ValueError(f"Top-level group '{field_name}' not found in schema")
+
+
+def strip_converted_type(src: str, dst: str, field_name: str) -> None:
+    """Copy `src` to `dst`, removing `converted_type` from the outer group for `field_name`.
+
+    The result carries only `logicalType` (modern-only annotation), which is the
+    case a reader must handle when the writer omits the legacy annotation.
+    """
+    shutil.copy2(src, dst)
+    data, md = _read_parquet_footer(dst)
+    el = _find_outer_group(md, field_name)
+    el.converted_type = None
+    _write_parquet_footer(dst, data, md)

@@ -74,12 +74,14 @@ interface SchemaNode {
 
     /// Returns true if this is a LIST group.
         public boolean isList() {
-            return convertedType == ConvertedType.LIST;
+            return convertedType == ConvertedType.LIST
+                    || logicalType instanceof LogicalType.ListType;
         }
 
     /// Returns true if this is a MAP group.
         public boolean isMap() {
-            return convertedType == ConvertedType.MAP;
+            return convertedType == ConvertedType.MAP
+                    || logicalType instanceof  LogicalType.MapType;
         }
 
     /// Returns true if this is a plain struct (no converted type and no modern logical-type annotation).
