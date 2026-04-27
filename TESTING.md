@@ -29,8 +29,11 @@ export AWS_PATH_STYLE=true
 ```bash
 curl -X PUT http://localhost:9090/test-bucket
 
-curl -X PUT --data-binary @performance-testing/test-data-setup/target/tlc-trip-record-data/yellow_tripdata_2025-01.parquet \
+curl -T performance-testing/test-data-setup/target/tlc-trip-record-data/yellow_tripdata_2025-01.parquet \
     http://localhost:9090/test-bucket/yellow_tripdata_2025-01.parquet
+
+curl -T performance-testing/test-data-setup/target/overture-maps-data/overture_places.zstd.parquet \
+    http://localhost:9090/test-bucket/overture_places.zstd.parquet
 ```
 
 3. Run hardwood CLI
