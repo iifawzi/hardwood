@@ -8,6 +8,8 @@
 package dev.hardwood;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -87,6 +89,20 @@ class IntervalLogicalTypeTest {
     @Test
     void testNullFieldReturnsNull() {
         assertThat(row2).isNull();
+    }
+
+    @Test
+    void testUnsignedValuesAboveIntegerMaxValueAreReturnedAsPositiveLongs() {
+        // 0xFFFFFFFF = 4_294_967_295 — max unsigned 32-bit value, would be -1 as signed int
+        long maxUint32 = 0xFFFFFFFFL;
+        ByteBuffer buf = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN);
+        buf.putInt((int) maxUint32);
+        buf.putInt((int) maxUint32);
+        buf.putInt((int) maxUint32);
+        PqInterval interval = LogicalTypeConverter.convertToInterval(buf.array(), PhysicalType.FIXED_LEN_BYTE_ARRAY);
+        assertThat(interval.months()).isEqualTo(maxUint32);
+        assertThat(interval.days()).isEqualTo(maxUint32);
+        assertThat(interval.milliseconds()).isEqualTo(maxUint32);
     }
 
     @Test
