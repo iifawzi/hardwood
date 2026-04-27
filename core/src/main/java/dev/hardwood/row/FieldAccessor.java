@@ -121,7 +121,7 @@ public interface FieldAccessor {
     /// The Parquet `INTERVAL` logical type stores three independent components
     /// (months, days, milliseconds) as little-endian unsigned 32-bit integers in
     /// a 12-byte FIXED_LEN_BYTE_ARRAY. The components are not normalized into a
-    /// single duration. See [PqInterval] for unsigned-int handling.
+    /// single duration. See [PqInterval] for component semantics.
     ///
     /// @param name the field name
     /// @return the interval value, or null if the field is null

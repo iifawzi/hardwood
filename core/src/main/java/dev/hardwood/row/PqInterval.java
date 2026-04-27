@@ -15,12 +15,10 @@ package dev.hardwood.row;
 /// FIXED_LEN_BYTE_ARRAY: three little-endian **unsigned** 32-bit integers in
 /// the order `months`, `days`, `milliseconds`.
 ///
-/// **Unsigned semantics:** Java has no unsigned `int` type, so values greater
-/// than `Integer.MAX_VALUE` will appear negative when read directly. To recover
-/// the unsigned value, use `Integer.toUnsignedLong(interval.months())` (and the
-/// same for `days()` / `milliseconds()`).
+/// Each component is exposed as a `long` holding its unsigned 32-bit value,
+/// so all values are in the range `[0, 4_294_967_295]`.
 ///
-/// @param months       number of months (unsigned 32-bit)
-/// @param days         number of days (unsigned 32-bit)
-/// @param milliseconds number of milliseconds (unsigned 32-bit)
-public record PqInterval(int months, int days, int milliseconds) {}
+/// @param months       number of months (unsigned 32-bit, range 0–4,294,967,295)
+/// @param days         number of days (unsigned 32-bit, range 0–4,294,967,295)
+/// @param milliseconds number of milliseconds (unsigned 32-bit, range 0–4,294,967,295)
+public record PqInterval(long months, long days, long milliseconds) {}

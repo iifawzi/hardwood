@@ -98,7 +98,11 @@ public class LogicalTypeConverter {
                     "INTERVAL requires exactly 12 bytes, got " + bytes.length);
         }
         ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        return new PqInterval(buffer.getInt(0), buffer.getInt(4), buffer.getInt(8));
+        long months = Integer.toUnsignedLong(buffer.getInt(0));
+        long days = Integer.toUnsignedLong(buffer.getInt(4));
+        long millis = Integer.toUnsignedLong(buffer.getInt(8));
+
+        return new PqInterval(months, days, millis);
     }
 
     /// Julian day number of the Unix epoch (1970-01-01).
