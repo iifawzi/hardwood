@@ -240,8 +240,8 @@ public class FilterPredicateResolver {
     }
 
     private static void validateLogicalType(String columnName,
-                                            Class<? extends LogicalType> expectedLogicalType,
-                                            ColumnSchema columnSchema) {
+            Class<? extends LogicalType> expectedLogicalType,
+            ColumnSchema columnSchema) {
         LogicalType logicalType = columnSchema.logicalType();
 
         if (!expectedLogicalType.isInstance(logicalType)) {
