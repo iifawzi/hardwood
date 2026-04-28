@@ -32,6 +32,7 @@ import dev.hardwood.metadata.ColumnMetaData;
 import dev.hardwood.metadata.CompressionCodec;
 import dev.hardwood.metadata.Encoding;
 import dev.hardwood.metadata.FieldPath;
+import dev.hardwood.metadata.LogicalType;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.metadata.RepetitionType;
 import dev.hardwood.metadata.RowGroup;
@@ -630,8 +631,8 @@ class FilterPredicateTest {
     void testUuidPredicateCreation() {
         UUID uuid = UUID.fromString("550e8400-e29b-41d4-a716-446655440000");
         FilterPredicate p = FilterPredicate.eq("request_id", uuid);
-        assertThat(p).isInstanceOf(FilterPredicate.BinaryColumnPredicate.class);
-        FilterPredicate.BinaryColumnPredicate bp = (FilterPredicate.BinaryColumnPredicate) p;
+        assertThat(p).isInstanceOf(FilterPredicate.UUIDColumnPredicate.class);
+        FilterPredicate.UUIDColumnPredicate bp = (FilterPredicate.UUIDColumnPredicate) p;
         assertThat(bp.column()).isEqualTo("request_id");
         assertThat(bp.op()).isEqualTo(FilterPredicate.Operator.EQ);
 
@@ -644,20 +645,55 @@ class FilterPredicateTest {
     @Test
     void testUuidAllOperators() {
         UUID uuid = UUID.fromString("00000000-0000-0000-0000-000000000001");
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.eq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.EQ);
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.notEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.NOT_EQ);
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.lt("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.LT);
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.ltEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.LT_EQ);
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.gt("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.GT);
-        assertThat(((FilterPredicate.BinaryColumnPredicate) FilterPredicate.gtEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.GT_EQ);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.eq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.EQ);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.notEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.NOT_EQ);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.lt("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.LT);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.ltEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.LT_EQ);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.gt("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.GT);
+        assertThat(((FilterPredicate.UUIDColumnPredicate) FilterPredicate.gtEq("u", uuid)).op()).isEqualTo(FilterPredicate.Operator.GT_EQ);
     }
 
     @Test
     void testUuidNilValue() {
         UUID nil = new UUID(0L, 0L);
-        FilterPredicate.BinaryColumnPredicate bp =
-                (FilterPredicate.BinaryColumnPredicate) FilterPredicate.eq("u", nil);
+        FilterPredicate.UUIDColumnPredicate bp =
+                (FilterPredicate.UUIDColumnPredicate) FilterPredicate.eq("u", nil);
         assertThat(bp.value()).isEqualTo(new byte[16]);
+    }
+
+    @Test
+    void uuidPredicateOnNonUuidColumnThrows() {
+        SchemaElement root = new SchemaElement("root", null, null, null, 1, null, null, null, null, null);
+        SchemaElement col = new SchemaElement("col", PhysicalType.FIXED_LEN_BYTE_ARRAY, 16,
+                RepetitionType.REQUIRED, null, null, null, null, null, null);
+        FileSchema schema = FileSchema.fromSchemaElements(List.of(root, col));
+
+        assertThatThrownBy(() -> FilterPredicateResolver.resolve(
+                FilterPredicate.eq("col", UUID.randomUUID()), schema))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("UuidType");
+    }
+
+    @Test
+    void testCanDropWithUuidPredicate() {
+        UUID low   = new UUID(0L, 1L);
+        UUID mid   = new UUID(0L, 50L);
+        UUID high  = new UUID(0L, 100L);
+        UUID above = new UUID(0L, 200L);
+
+        RowGroup rg = createUuidRowGroup(low, high);
+        FileSchema schema = createUuidSchema();
+
+        // EQ mid: in range → cannot drop
+        assertThat(canDropRowGroup(FilterPredicate.eq("col", mid), rg, schema)).isFalse();
+        // EQ above max → can drop
+        assertThat(canDropRowGroup(FilterPredicate.eq("col", above), rg, schema)).isTrue();
+        // GT high: max is high, none > high → can drop
+        assertThat(canDropRowGroup(FilterPredicate.gt("col", high), rg, schema)).isTrue();
+        // LT low: min is low, none < low → can drop
+        assertThat(canDropRowGroup(FilterPredicate.lt("col", low), rg, schema)).isTrue();
+        // GT_EQ low: max >= low → cannot drop
+        assertThat(canDropRowGroup(FilterPredicate.gtEq("col", low), rg, schema)).isFalse();
     }
 
     // ==================== Float/Double Edge Cases ====================
@@ -1105,6 +1141,18 @@ class FilterPredicateTest {
         return createRowGroupWithStats(PhysicalType.BYTE_ARRAY, min, max);
     }
 
+    private static RowGroup createUuidRowGroup(UUID min, UUID max) {
+        return createRowGroupWithStats(PhysicalType.FIXED_LEN_BYTE_ARRAY,
+                uuidBytes(min), uuidBytes(max));
+    }
+
+    private static byte[] uuidBytes(UUID uuid) {
+        ByteBuffer buf = ByteBuffer.allocate(16);
+        buf.putLong(uuid.getMostSignificantBits());
+        buf.putLong(uuid.getLeastSignificantBits());
+        return buf.array();
+    }
+
     private static RowGroup createRowGroupWithStats(PhysicalType type, byte[] min, byte[] max) {
         Statistics stats = new Statistics(min, max, 0L, null, false);
         ColumnMetaData cmd = new ColumnMetaData(
@@ -1153,6 +1201,13 @@ class FilterPredicateTest {
 
     private static FileSchema createBinarySchema() {
         return createSchemaForType(PhysicalType.BYTE_ARRAY);
+    }
+
+    private static FileSchema createUuidSchema() {
+        SchemaElement root = new SchemaElement("root", null, null, null, 1, null, null, null, null, null);
+        SchemaElement col = new SchemaElement("col", PhysicalType.FIXED_LEN_BYTE_ARRAY, 16,
+                RepetitionType.REQUIRED, null, null, null, null, null, new LogicalType.UuidType());
+        return FileSchema.fromSchemaElements(List.of(root, col));
     }
 
     private static FileSchema createSchemaForType(PhysicalType type) {

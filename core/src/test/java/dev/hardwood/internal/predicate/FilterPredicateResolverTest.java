@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 
@@ -197,6 +198,29 @@ class FilterPredicateResolverTest {
     }
 
     @Test
+    void resolveSignedBinaryOnDecimalColumn() {
+        FileSchema schema = schemaWithLogicalType("amount", PhysicalType.FIXED_LEN_BYTE_ARRAY, 8,
+                new LogicalType.DecimalType(2, 18));
+        byte[] value = new byte[8];
+        ResolvedPredicate resolved = FilterPredicateResolver.resolve(
+                new FilterPredicate.SignedBinaryColumnPredicate("amount", FilterPredicate.Operator.GT, value),
+                schema);
+        assertThat(resolved).isInstanceOf(ResolvedPredicate.BinaryPredicate.class);
+        assertThat(((ResolvedPredicate.BinaryPredicate) resolved).signed()).isTrue();
+    }
+
+    @Test
+    void resolveSignedBinaryOnNonDecimalColumnThrows() {
+        FileSchema schema = schemaWithLogicalType("data", PhysicalType.FIXED_LEN_BYTE_ARRAY, 8, null);
+        byte[] value = new byte[8];
+        assertThatThrownBy(() -> FilterPredicateResolver.resolve(
+                new FilterPredicate.SignedBinaryColumnPredicate("data", FilterPredicate.Operator.EQ, value),
+                schema))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("DecimalType");
+    }
+
+    @Test
     void resolveNegativeDecimalFixedLenByteArray() {
         FileSchema schema = schemaWithLogicalType("amount", PhysicalType.FIXED_LEN_BYTE_ARRAY, 8,
                 new LogicalType.DecimalType(2, 18));
@@ -211,6 +235,32 @@ class FilterPredicateResolverTest {
         assertThat(bp.value()).isEqualTo(expected);
         // First byte should be 0xFF (negative sign extension)
         assertThat(bp.value()[0]).isEqualTo((byte) 0xFF);
+    }
+
+    // ==================== UUID ====================
+
+    @Test
+    void resolveUuidToUnsignedBinary() {
+        FileSchema schema = schemaWithLogicalType("id", PhysicalType.FIXED_LEN_BYTE_ARRAY, 16,
+                new LogicalType.UuidType());
+        UUID uuid = UUID.fromString("550e8400-e29b-41d4-a716-446655440000");
+        ResolvedPredicate resolved = FilterPredicateResolver.resolve(
+                FilterPredicate.eq("id", uuid), schema);
+
+        assertThat(resolved).isInstanceOf(ResolvedPredicate.BinaryPredicate.class);
+        ResolvedPredicate.BinaryPredicate bp = (ResolvedPredicate.BinaryPredicate) resolved;
+        assertThat(bp.signed()).isFalse();
+        assertThat(bp.op()).isEqualTo(FilterPredicate.Operator.EQ);
+        assertThat(bp.columnIndex()).isEqualTo(0);
+    }
+
+    @Test
+    void resolveUuidOnNonUuidColumnThrows() {
+        FileSchema schema = schemaWithLogicalType("id", PhysicalType.FIXED_LEN_BYTE_ARRAY, 16, null);
+        assertThatThrownBy(() -> FilterPredicateResolver.resolve(
+                FilterPredicate.eq("id", UUID.randomUUID()), schema))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("UuidType");
     }
 
     // ==================== Combinators ====================

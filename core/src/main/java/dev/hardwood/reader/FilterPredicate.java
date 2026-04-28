@@ -66,6 +66,7 @@ public sealed interface FilterPredicate
                 FilterPredicate.BooleanColumnPredicate,
                 FilterPredicate.BinaryColumnPredicate,
                 FilterPredicate.SignedBinaryColumnPredicate,
+                FilterPredicate.UUIDColumnPredicate,
                 FilterPredicate.IntInPredicate,
                 FilterPredicate.LongInPredicate,
                 FilterPredicate.BinaryInPredicate,
@@ -400,35 +401,35 @@ public sealed interface FilterPredicate
 
     // ==================== UUID Predicates ====================
 
-    /// Creates an equals predicate for a [UUID] column (Parquet UUID logical type).
+    /// Creates an equal predicate for a [UUID] column (Parquet UUID logical type).
     /// The UUID is encoded as a 16-byte big-endian `FIXED_LEN_BYTE_ARRAY`.
     static FilterPredicate eq(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.EQ, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.EQ, uuidToBytes(value));
     }
 
     /// Creates a not-equals predicate for a [UUID] column.
     static FilterPredicate notEq(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.NOT_EQ, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.NOT_EQ, uuidToBytes(value));
     }
 
     /// Creates a less-than predicate for a [UUID] column.
     static FilterPredicate lt(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.LT, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.LT, uuidToBytes(value));
     }
 
     /// Creates a less-than-or-equal predicate for a [UUID] column.
     static FilterPredicate ltEq(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.LT_EQ, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.LT_EQ, uuidToBytes(value));
     }
 
     /// Creates a greater-than predicate for a [UUID] column.
     static FilterPredicate gt(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.GT, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.GT, uuidToBytes(value));
     }
 
     /// Creates a greater-than-or-equal predicate for a [UUID] column.
     static FilterPredicate gtEq(String column, UUID value) {
-        return new BinaryColumnPredicate(column, Operator.GT_EQ, uuidToBytes(value));
+        return new UUIDColumnPredicate(column, Operator.GT_EQ, uuidToBytes(value));
     }
 
     // ==================== Conversion Helpers ====================
@@ -517,6 +518,23 @@ public sealed interface FilterPredicate
         public boolean equals(Object o) {
             if (this == o) return true;
             if (!(o instanceof SignedBinaryColumnPredicate that)) return false;
+            return column.equals(that.column) && op == that.op && Arrays.equals(value, that.value);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = column.hashCode();
+            result = 31 * result + op.hashCode();
+            result = 31 * result + Arrays.hashCode(value);
+            return result;
+        }
+    }
+
+    record UUIDColumnPredicate(String column, Operator op, byte[] value) implements FilterPredicate {
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof UUIDColumnPredicate that)) return false;
             return column.equals(that.column) && op == that.op && Arrays.equals(value, that.value);
         }
 
