@@ -7,6 +7,8 @@
  */
 package dev.hardwood.internal.predicate;
 
+import java.util.Arrays;
+
 /// Byte array comparison utilities for filter predicate evaluation.
 ///
 /// Provides unsigned lexicographic comparison (for BYTE_ARRAY) and signed
@@ -21,14 +23,7 @@ public final class BinaryComparator {
     ///
     /// @return negative if a < b, zero if equal, positive if a > b
     public static int compareUnsigned(byte[] a, byte[] b) {
-        int minLen = Math.min(a.length, b.length);
-        for (int i = 0; i < minLen; i++) {
-            int cmp = (a[i] & 0xFF) - (b[i] & 0xFF);
-            if (cmp != 0) {
-                return cmp;
-            }
-        }
-        return a.length - b.length;
+        return Arrays.compareUnsigned(a, b);
     }
 
     /// Compare two same-length byte arrays as big-endian two's complement signed values.
@@ -36,6 +31,7 @@ public final class BinaryComparator {
     ///
     /// @return negative if a < b, zero if equal, positive if a > b
     public static int compareSigned(byte[] a, byte[] b) {
+        int len = a.length;
         if (a.length != b.length) {
             throw new IllegalArgumentException(
                     "Signed binary comparison requires same-length arrays: " + a.length + " vs " + b.length);
@@ -49,12 +45,6 @@ public final class BinaryComparator {
             return cmp;
         }
         // Remaining bytes: compare as unsigned
-        for (int i = 1; i < a.length; i++) {
-            cmp = (a[i] & 0xFF) - (b[i] & 0xFF);
-            if (cmp != 0) {
-                return cmp;
-            }
-        }
-        return 0;
+        return Arrays.compareUnsigned(a, 1, len, b, 1, len);
     }
 }

@@ -142,7 +142,15 @@ public class FilterPredicateResolver {
                 ColumnSchema cs = resolveColumn(p.column(), schema);
                 rejectRepeated(p.column(), cs);
                 validateType(p.column(), PhysicalType.FIXED_LEN_BYTE_ARRAY, cs);
+                validateLogicalType(p.column(), LogicalType.DecimalType.class, cs);
                 yield new ResolvedPredicate.BinaryPredicate(cs.columnIndex(), p.op(), p.value(), true);
+            }
+            case FilterPredicate.UUIDColumnPredicate p -> {
+                ColumnSchema cs = resolveColumn(p.column(), schema);
+                rejectRepeated(p.column(), cs);
+                validateType(p.column(), PhysicalType.FIXED_LEN_BYTE_ARRAY, cs);
+                validateLogicalType(p.column(), LogicalType.UuidType.class, cs);
+                yield new ResolvedPredicate.BinaryPredicate(cs.columnIndex(), p.op(), p.value(), false);
             }
             case IntInPredicate p -> {
                 ColumnSchema cs = resolveColumn(p.column(), schema);
@@ -228,6 +236,19 @@ public class FilterPredicateResolver {
             throw new IllegalArgumentException(
                     "Column '" + columnName + "' has physical type " + actualType
                             + "; given filter predicate type " + expectedType + " is incompatible");
+        }
+    }
+
+    private static void validateLogicalType(String columnName,
+                                            Class<? extends LogicalType> expectedLogicalType,
+                                            ColumnSchema columnSchema) {
+        LogicalType logicalType = columnSchema.logicalType();
+
+        if (!expectedLogicalType.isInstance(logicalType)) {
+            throw new IllegalArgumentException(
+                    "Column '" + columnName + "' has logical type " + logicalType
+                            + "; given filter predicate logical type "
+                            + expectedLogicalType.getName() + " is incompatible");
         }
     }
 
