@@ -13,8 +13,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.UUID;
 
-import dev.hardwood.internal.predicate.RecordFilterEvaluator;
-import dev.hardwood.internal.predicate.ResolvedPredicate;
+import dev.hardwood.internal.predicate.RowMatcher;
 import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.PqDoubleList;
 import dev.hardwood.row.PqIntList;
@@ -24,7 +23,6 @@ import dev.hardwood.row.PqLongList;
 import dev.hardwood.row.PqMap;
 import dev.hardwood.row.PqStruct;
 import dev.hardwood.row.PqVariant;
-import dev.hardwood.schema.FileSchema;
 
 /// Filtered wrapper around any [RowReader] that skips non-matching rows.
 ///
@@ -33,22 +31,20 @@ import dev.hardwood.schema.FileSchema;
 public final class FilteredRowReader implements RowReader {
 
     private final RowReader delegate;
-    private final ResolvedPredicate predicate;
-    private final FileSchema schema;
+    private final RowMatcher matcher;
 
     private boolean hasMatch;
 
-    FilteredRowReader(RowReader delegate, ResolvedPredicate predicate, FileSchema schema) {
+    FilteredRowReader(RowReader delegate, RowMatcher matcher) {
         this.delegate = delegate;
-        this.predicate = predicate;
-        this.schema = schema;
+        this.matcher = matcher;
     }
 
     @Override
     public boolean hasNext() {
         while (delegate.hasNext()) {
             delegate.next();
-            if (RecordFilterEvaluator.matchesRow(predicate, delegate, schema)) {
+            if (matcher.test(delegate)) {
                 hasMatch = true;
                 return true;
             }

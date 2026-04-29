@@ -297,7 +297,13 @@ class RecordFilterEvaluatorTest {
     // ==================== Helpers ====================
 
     private static boolean matchesRow(ResolvedPredicate predicate, StructAccessor row, FileSchema schema) {
-        return RecordFilterEvaluator.matchesRow(predicate, row, schema);
+        boolean legacy = RecordFilterEvaluator.matchesRow(predicate, row, schema);
+        boolean compiled = RecordFilterCompiler.compile(predicate, schema).test(row);
+        if (legacy != compiled) {
+            throw new AssertionError("Legacy/compiled disagreement: predicate=" + predicate
+                    + " legacy=" + legacy + " compiled=" + compiled);
+        }
+        return legacy;
     }
 
     private static void assertMatch(boolean expected, ResolvedPredicate predicate,

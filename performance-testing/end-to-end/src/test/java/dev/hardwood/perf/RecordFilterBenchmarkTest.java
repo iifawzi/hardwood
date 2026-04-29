@@ -88,6 +88,26 @@ class RecordFilterBenchmarkTest {
             selectiveTimes[i] = System.nanoTime() - start;
         }
 
+        // Compound match-all And — exercises predicate-tree dispatch and recursion overhead
+        long[] compoundTimes = new long[runs];
+        long[] compoundRows = new long[runs];
+        for (int i = 0; i < runs; i++) {
+            long start = System.nanoTime();
+            compoundRows[i] = runCompoundMatchAllFilter();
+            compoundTimes[i] = System.nanoTime() - start;
+        }
+
+        // Page-prunable range + per-row value filter — exercises page-level filtering
+        // (via column-index min/max statistics) AND record-level filtering on the rows
+        // that survive page pruning.
+        long[] combinedTimes = new long[runs];
+        long[] combinedRows = new long[runs];
+        for (int i = 0; i < runs; i++) {
+            long start = System.nanoTime();
+            combinedRows[i] = runPageAndRecordFilter();
+            combinedTimes[i] = System.nanoTime() - start;
+        }
+
         // Print results
         System.out.println("\nResults:");
         System.out.printf("  %-45s %10s %15s %12s%n", "Contender", "Time (ms)", "Rows", "Records/sec");
@@ -98,20 +118,73 @@ class RecordFilterBenchmarkTest {
         printResults("Match-all filter (worst case)", matchAllTimes, matchAllRows, runs);
         System.out.println();
         printResults("Selective filter (id < 1%)", selectiveTimes, selectiveRows, runs);
+        System.out.println();
+        printResults("Compound match-all (id>=0 AND value<+inf)", compoundTimes, compoundRows, runs);
+        System.out.println();
+        printResults("Page+record (id range AND value<500)", combinedTimes, combinedRows, runs);
 
         double avgNoFilter = avg(noFilterTimes) / 1_000_000.0;
         double avgMatchAll = avg(matchAllTimes) / 1_000_000.0;
         double avgSelective = avg(selectiveTimes) / 1_000_000.0;
+        double avgCompound = avg(compoundTimes) / 1_000_000.0;
+        double avgCombined = avg(combinedTimes) / 1_000_000.0;
 
         System.out.printf("%n  Match-all overhead: %.1f%% (%.0f ms → %.0f ms)%n",
                 100.0 * (avgMatchAll - avgNoFilter) / avgNoFilter, avgNoFilter, avgMatchAll);
         System.out.printf("  Selective speedup: %.1fx (%.0f ms → %.0f ms)%n",
                 avgNoFilter / avgSelective, avgNoFilter, avgSelective);
+        System.out.printf("  Compound overhead: %.1f%% (%.0f ms → %.0f ms)%n",
+                100.0 * (avgCompound - avgNoFilter) / avgNoFilter, avgNoFilter, avgCompound);
+        System.out.printf("  Page+record speedup: %.1fx (%.0f ms → %.1f ms)%n",
+                avgNoFilter / avgCombined, avgNoFilter, avgCombined);
 
         // Correctness
         assertThat(noFilterRows[0]).isEqualTo(TOTAL_ROWS);
         assertThat(matchAllRows[0]).isEqualTo(TOTAL_ROWS);
         assertThat(selectiveRows[0]).isLessThan(TOTAL_ROWS);
+        assertThat(compoundRows[0]).isEqualTo(TOTAL_ROWS);
+        // Combined: id range narrows to ~100K rows (1% of total), value < 500 keeps roughly half
+        // (uniform 0..1000), so we expect somewhere between 30K and 70K matching rows.
+        assertThat(combinedRows[0]).isGreaterThan(0L).isLessThan(TOTAL_ROWS / 50L);
+    }
+
+    private long runPageAndRecordFilter() throws Exception {
+        // Page-prunable: id BETWEEN 9_500_000 and 9_600_000 — only the last few data
+        // pages overlap this range, so column-index min/max should drop ~99% of pages
+        // before any row is decoded.
+        // Per-row only: value < 500.0 — value is random uniform [0, 1000), so its
+        // statistics span the whole range and provide no page-level pruning.
+        // Combined effect: page filter saves I/O + decode, record filter then runs on
+        // the surviving ~100K rows.
+        FilterPredicate filter = FilterPredicate.and(
+                FilterPredicate.gtEq("id", (long) (TOTAL_ROWS - TOTAL_ROWS / 100)),
+                FilterPredicate.lt("id", (long) (TOTAL_ROWS - TOTAL_ROWS / 100) + (TOTAL_ROWS / 100)),
+                FilterPredicate.lt("value", 500.0));
+        long count = 0;
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(BENCHMARK_FILE));
+             RowReader rows = reader.createRowReader(filter)) {
+            while (rows.hasNext()) {
+                rows.next();
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private long runCompoundMatchAllFilter() throws Exception {
+        // Two-leaf AND that matches every row — exercises tree recursion and per-leaf dispatch overhead.
+        FilterPredicate filter = FilterPredicate.and(
+                FilterPredicate.gtEq("id", 0L),
+                FilterPredicate.lt("value", Double.MAX_VALUE));
+        long count = 0;
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(BENCHMARK_FILE));
+             RowReader rows = reader.createRowReader(filter)) {
+            while (rows.hasNext()) {
+                rows.next();
+                count++;
+            }
+        }
+        return count;
     }
 
     private long runNoFilter() throws Exception {

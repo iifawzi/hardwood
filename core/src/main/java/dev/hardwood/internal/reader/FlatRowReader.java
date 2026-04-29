@@ -17,7 +17,9 @@ import java.util.UUID;
 
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.conversion.LogicalTypeConverter;
+import dev.hardwood.internal.predicate.RecordFilterCompiler;
 import dev.hardwood.internal.predicate.ResolvedPredicate;
+import dev.hardwood.internal.predicate.RowMatcher;
 import dev.hardwood.internal.util.StringToIntMap;
 import dev.hardwood.metadata.LogicalType;
 import dev.hardwood.metadata.PhysicalType;
@@ -40,7 +42,7 @@ import dev.hardwood.schema.ProjectedSchema;
 /// giving the JIT a single concrete class with monomorphic call sites. Supports all
 /// primitive types, logical type conversions (date, time, timestamp, decimal, UUID,
 /// string), and both name-based and index-based access.
-public final class FlatRowReader implements RowReader {
+public final class FlatRowReader implements RowReader, IndexedAccessor {
 
     private static final BitSet NO_NULLS = new BitSet(0);
 
@@ -149,7 +151,11 @@ public final class FlatRowReader implements RowReader {
         FlatRowReader reader = new FlatRowReader(buffers, workers, schema, projectedSchema);
         reader.initialize();
         if (filter != null) {
-            return new FilteredRowReader(reader, filter, schema);
+            // Indexed compile path: this reader implements IndexedAccessor, so
+            // top-level leaves can use projected-index access and bypass the
+            // name → index hash lookup.
+            RowMatcher matcher = RecordFilterCompiler.compile(filter, schema, projectedSchema);
+            return new FilteredRowReader(reader, matcher);
         }
         return reader;
     }
@@ -226,6 +232,22 @@ public final class FlatRowReader implements RowReader {
         }
         return ((boolean[]) flatValueArrays[columnIndex])[rowIndex];
     }
+
+    // ==================== IndexedAccessor (delegate to projected-index methods) ====================
+    //
+    // The Indexed* methods are projected-index based, identical to the
+    // existing int-indexed RowReader methods. They exist as a separate
+    // narrower interface so the predicate compiler can express the
+    // requirement statically (the row must be an `IndexedAccessor`) without
+    // depending on the public `RowReader` API.
+
+    @Override public boolean isNullAt(int projectedIndex) { return isNull(projectedIndex); }
+    @Override public int getIntAt(int projectedIndex) { return getInt(projectedIndex); }
+    @Override public long getLongAt(int projectedIndex) { return getLong(projectedIndex); }
+    @Override public float getFloatAt(int projectedIndex) { return getFloat(projectedIndex); }
+    @Override public double getDoubleAt(int projectedIndex) { return getDouble(projectedIndex); }
+    @Override public boolean getBooleanAt(int projectedIndex) { return getBoolean(projectedIndex); }
+    @Override public byte[] getBinaryAt(int projectedIndex) { return getBinary(projectedIndex); }
 
     // ==================== Primitive Accessors by Name ====================
 
