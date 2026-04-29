@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+#
+#  SPDX-License-Identifier: Apache-2.0
+#
+#  Copyright The original authors
+#
+#  Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
+#
+
 # tools/contributors.py — emit the alphabetical contributor list for a release range.
 #
 # Usage:

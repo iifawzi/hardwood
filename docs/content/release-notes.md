@@ -13,7 +13,7 @@
 
 See [GitHub Releases](https://github.com/hardwood-hq/hardwood/releases) for downloads and more information.
 
-## 1.0.0.Beta2
+## 1.0.0.Beta2 (2026-04-29)
 
 Highlights of this release:
 
@@ -29,7 +29,7 @@ See the [1.0.0.Beta2 milestone](https://github.com/hardwood-hq/hardwood/mileston
 
 Thank you to all contributors to this release: [André Rouél](https://github.com/arouel), [Brandon Brown](https://github.com/brbrown25), [Bruno Borges](https://github.com/brunoborges), [Fawzi Essam](https://github.com/iifawzi), [Gunnar Morling](https://github.com/gunnarmorling), [Manish](https://github.com/mghildiy), [polo](https://github.com/polo7), [Rion Williams](https://github.com/rionmonster), [Sabarish Rajamohan](https://github.com/sabarish98), [Trevin Chow](https://github.com/tmchow).
 
-## 1.0.0.Beta1
+## 1.0.0.Beta1 (2026-04-02)
 
 [Announcement blog post](https://www.morling.dev/blog/hardwood-reaches-beta-s3-predicate-push-down-cli/)
 
@@ -47,7 +47,7 @@ See the [1.0.0.Beta1 milestone](https://github.com/hardwood-hq/hardwood/mileston
 
 Thank you to all contributors to this release: [Arnav Balyan](https://github.com/ArnavBalyan), [Brandon Brown](https://github.com/brbrown25), [Gunnar Morling](https://github.com/gunnarmorling), [Manish](https://github.com/mghildiy), [Nicolas Grondin](https://github.com/ngrondin), [Rion Williams](https://github.com/rionmonster), [Romain Manni-Bucau](https://github.com/rmannibucau), [Said Boudjelda](https://github.com/bmscomp).
 
-## 1.0.0.Alpha1
+## 1.0.0.Alpha1 (2026-02-26)
 
 [Announcement blog post](https://www.morling.dev/blog/hardwood-new-parser-for-apache-parquet/)
 
