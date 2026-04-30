@@ -1,6 +1,6 @@
 # Plan: Record Filter Arity-2 Fusion
 
-**Status: Pending**
+**Status: Implemented**
 
 ## Context
 
@@ -247,18 +247,65 @@ Each fused matcher's source is mechanical, and the file is large (~4000–5000 l
 
 ## Results
 
-_To be filled after running the benchmarks._
+Hardware: macOS aarch64 (Apple Silicon), Oracle JDK 25.0.3, Maven wrapper 3.9.12.
 
 ### JMH micro — `RecordFilterMegamorphicBenchmark`
 
-| Shape                             | Generic ns/op | Fused ns/op | Speedup |
-|-----------------------------------|--------------:|------------:|--------:|
-| _populated after benchmark run_   |               |             |         |
+2 forks × 5 warmup × 5 measurement iterations (default JMH config). The
+benchmark runs 12 distinct fused (combo × connective) shapes against a
+4096-row in-memory batch in two arms: `fusedMegamorphic` compiles each
+matcher through `RecordFilterCompiler` with fusion enabled (each shape
+yields a unique synthetic class — outer site megamorphic, body inlined),
+and `genericMegamorphic` builds a generic `and2`/`or2` envelope around
+each leaf pair so the inner `a.test()` / `b.test()` sites also accumulate
+12 receiver classes and go megamorphic. `ns/op` is per row × per shape.
+
+| Shape mix (12 fused tuples)         | Generic ns/op | Fused ns/op | Speedup |
+|-------------------------------------|--------------:|------------:|--------:|
+| Aggregate (avgt over all 12 shapes) | 5.298 ± 0.087 | **3.014 ± 0.014** | **1.76×** |
+
+The fused arm holds steady at ~3 ns/op even with 12 distinct receiver
+classes flowing through the outer site. The generic arm pays an
+additional ~2.3 ns/row for the inner-site megamorphism that fusion
+eliminates.
 
 ### End-to-end — `RecordFilterMegamorphicEndToEndTest`
 
-| Scenario                          | Generic time | Fused time | Speedup |
-|-----------------------------------|-------------:|-----------:|--------:|
-| _populated after benchmark run_   |              |            |         |
+10M-row Parquet file, schema `(id long, value double, tag int, flag boolean,
+bin string)`, 5 measurement runs per shape. Same 12 query shapes as the JMH
+micro, executed sequentially through `ParquetFileReader.buildRowReader()`.
+Two separate JVM invocations — one with `-Dhardwood.recordfilter.fusion=true`,
+one with `=false` — to keep the static `FUSION_ENABLED` flag clean.
 
-Hardware, JDK, and Maven wrapper version recorded alongside the numbers.
+| Shape                                                 | Generic ms | Fused ms | Speedup |
+|-------------------------------------------------------|-----------:|---------:|--------:|
+| `id BETWEEN 1M and 4M` (long+long AND)                |       30.7 |     14.1 |   2.18× |
+| `id < 500K OR id > 9.5M` (long+long OR)               |       10.6 |      9.2 |   1.15× |
+| `tag BETWEEN 0 and 50` (int+int AND)                  |      120.8 |     69.9 |   1.73× |
+| `tag = 5 OR tag = 47` (int+int OR)                    |       58.0 |     42.3 |   1.37× |
+| `value BETWEEN 0 and 500` (double+double AND)         |      126.7 |     83.7 |   1.51× |
+| `id < 5M AND value < 500` (long+double AND)           |       61.4 |     48.7 |   1.26× |
+| `id < 5M OR value > 500` (long+double OR)             |       72.7 |     69.4 |   1.05× |
+| `tag < 50 AND id > 5M` (int+long AND)                 |       51.3 |     39.6 |   1.30× |
+| `tag < 50 AND value < 500` (int+double AND)           |      120.0 |     98.0 |   1.22× |
+| `flag = true AND flag != false` (boolean+boolean AND) |       99.4 |     75.7 |   1.31× |
+| `value > 0 AND id < 9999` (double+long AND, swap)     |        1.0 |      0.9 |   1.11× |
+| `bin BETWEEN k200 and k800` (binary+binary AND)       |      178.5 |    103.6 |   1.72× |
+| **Aggregate (60 shape×run combinations)**             | **4655.7** | **3276.0** | **1.42×** |
+
+Largest wins are on the same-column AND BETWEEN shapes (long, int,
+double, binary) — the legacy generic path pays for two megamorphic inner
+sites per row, while the fused matcher loads the value once and runs both
+comparisons inline. Smallest wins are on shapes whose body cost is
+already dominated by I/O or page decoding — the canonical-swap shape
+matches only ~0.1 % of rows so the per-row matcher cost is amortized
+into noise. The aggregate **42 % wall-clock reduction** holds even though
+several shapes traverse 10M rows where decode time is non-trivial.
+
+### Why the gap stays under 2× end-to-end
+
+The JMH micro isolates dispatch and shows the body-only win (1.76×); end-to-end
+those 2.3 ns/row are competing with decode, projection, and reader plumbing.
+The remaining cost is dominated by the residual outer-site megamorphism at
+`FilteredRowReader.hasNext` and by the page-decode pipeline — see the
+*Future work* section for Stage 5 directions targeting the outer site.
