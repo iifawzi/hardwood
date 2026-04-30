@@ -249,32 +249,24 @@ Each fused matcher's source is mechanical, and the file is large (~4000–5000 l
 
 Hardware: macOS aarch64 (Apple Silicon), Oracle JDK 25.0.3, Maven wrapper 3.9.12.
 
-### JMH micro — `RecordFilterMicroBenchmark` (legacy vs compiled-with-fusion)
+### JMH micro-benchmark (`RecordFilterMicroBenchmark`)
 
-Per-shape monomorphic micro: each `@Benchmark` invocation drives one
-matcher class against 4096 rows, so the call site is monomorphic and the
-JIT inlines through without help. Compares the legacy
-`RecordFilterEvaluator.matchesRow` interpreter to the full compiler +
-fusion pipeline. 2 forks × 5 warmup × 5 measurement iterations.
-`@OperationsPerInvocation(BATCH_SIZE)` so `ns/op` is per row.
+2 forks × 5 warmup × 5 measurement iterations. `ns/op` is per-row cost over a 4096-row in-memory batch (`@OperationsPerInvocation(BATCH_SIZE)`). Match-all predicates only — every row evaluated, so dispatch overhead is the entire cost. The compiled column reflects the full Stage 1–4 pipeline with fusion enabled (default).
 
-| Shape   | Legacy ns/op    | Compiled+fused ns/op | Speedup vs legacy |
-|---------|----------------:|---------------------:|------------------:|
-| single  |  2.703 ± 0.033  | **0.523 ± 0.003**    | **5.17×**         |
-| and2    | 10.299 ± 0.053  | **0.584 ± 0.006**    | **17.63×**        |
-| and3    | 22.141 ± 0.104  | **0.551 ± 0.006**    | **40.18×**        |
-| and4    | 32.264 ± 0.874  | **0.649 ± 0.009**    | **49.71×**        |
-| or2     |  4.628 ± 0.044  | **0.517 ± 0.003**    | **8.95×**         |
-| nested  | 33.766 ± 0.484  | **1.002 ± 0.021**    | **33.70×**        |
-| intIn5  |  3.801 ± 0.052  | **1.404 ± 0.025**    | **2.71×**         |
-| intIn32 |  7.016 ± 0.026  | **3.186 ± 0.030**    | **2.20×**         |
+| Shape | Legacy ns/op | Compiled ns/op | Speedup |
+|---|---:|---:|---:|
+| `single` (`id >= 0`) | 2.703 ± 0.033 | **0.523 ± 0.003** | **5.17×** |
+| `and2` | 10.299 ± 0.053 | **0.584 ± 0.006** | **17.63×** |
+| `and3` | 22.141 ± 0.104 | **0.551 ± 0.006** | **40.18×** |
+| `and4` | 32.264 ± 0.874 | **0.649 ± 0.009** | **49.71×** |
+| `or2` | 4.628 ± 0.044 | **0.517 ± 0.003** | **8.95×** |
+| `nested` (and-of-or) | 33.766 ± 0.484 | **1.002 ± 0.021** | **33.70×** |
+| `intIn5` | 3.801 ± 0.052 | **1.404 ± 0.025** | **2.71×** |
+| `intIn32` | 7.016 ± 0.026 | **3.186 ± 0.030** | **2.20×** |
 
-These per-shape numbers are essentially unchanged from the Stage 1–3
-results in [RECORD_FILTER_COMPILATION.md](RECORD_FILTER_COMPILATION.md):
-under monomorphic conditions the JIT was already folding everything
-inline at the call sites of `And2Matcher` / `Or2Matcher`, so fusion
-adds nothing. The fusion contribution only shows up when the inline
-caches go megamorphic, which the next benchmark deliberately induces.
+(Errors are 99.9 % confidence intervals from JMH.)
+
+These per-shape numbers are essentially unchanged from the Stage 1–3 results in [RECORD_FILTER_COMPILATION.md](RECORD_FILTER_COMPILATION.md): under monomorphic conditions the JIT was already folding everything inline at the call sites of `And2Matcher` / `Or2Matcher`, so fusion adds nothing here. The fusion contribution only shows up when the inline caches go megamorphic, which the next benchmark deliberately induces.
 
 ### JMH micro — `RecordFilterMegamorphicBenchmark` (megamorphic three-way)
 
