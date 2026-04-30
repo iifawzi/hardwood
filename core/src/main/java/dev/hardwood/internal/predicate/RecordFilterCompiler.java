@@ -114,7 +114,7 @@ public final class RecordFilterCompiler {
     /// the leaf cannot use indexed access — either because it isn't
     /// top-level (path length > 1), no callback was supplied, or the
     /// callback declines to map this column.
-    private static int indexedTopLevel(FileSchema schema, int columnIndex,
+    static int indexedTopLevel(FileSchema schema, int columnIndex,
             IntUnaryOperator topLevelFieldIndex) {
         if (topLevelFieldIndex == null) {
             return -1;
@@ -130,19 +130,78 @@ public final class RecordFilterCompiler {
     private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
-        if (compiled.length == 1) {
-            return compiled[0];
-        }
-        return new AndNMatcher(compiled);
+        return switch (compiled.length) {
+            case 1 -> compiled[0];
+            case 2 -> new And2Matcher(compiled[0], compiled[1]);
+            case 3 -> new And3Matcher(compiled[0], compiled[1], compiled[2]);
+            case 4 -> new And4Matcher(compiled[0], compiled[1], compiled[2], compiled[3]);
+            default -> new AndNMatcher(compiled);
+        };
     }
 
     private static RowMatcher compileOr(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
-        if (compiled.length == 1) {
-            return compiled[0];
+        return switch (compiled.length) {
+            case 1 -> compiled[0];
+            case 2 -> new Or2Matcher(compiled[0], compiled[1]);
+            case 3 -> new Or3Matcher(compiled[0], compiled[1], compiled[2]);
+            case 4 -> new Or4Matcher(compiled[0], compiled[1], compiled[2], compiled[3]);
+            default -> new OrNMatcher(compiled);
+        };
+    }
+
+    // ==================== Fixed-arity AND/OR matchers ====================
+    //
+    // Final-field classes give the JIT statically-known children at each call
+    // site. Since each leaf type/op produces a distinct lambda class, the
+    // call sites `a.test(row)`, `b.test(row)`, ... see one specific receiver
+    // type per query and inline aggressively — effectively fusing the leaf
+    // bodies at runtime without combinatorial code in the source.
+
+    private static final class And2Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        And2Matcher(RowMatcher a, RowMatcher b) {
+            this.a = a;
+            this.b = b;
         }
-        return new OrNMatcher(compiled);
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) && b.test(row);
+        }
+    }
+
+    private static final class And3Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        private final RowMatcher c;
+        And3Matcher(RowMatcher a, RowMatcher b, RowMatcher c) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+        }
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) && b.test(row) && c.test(row);
+        }
+    }
+
+    private static final class And4Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        private final RowMatcher c;
+        private final RowMatcher d;
+        And4Matcher(RowMatcher a, RowMatcher b, RowMatcher c, RowMatcher d) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+            this.d = d;
+        }
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) && b.test(row) && c.test(row) && d.test(row);
+        }
     }
 
     private static final class AndNMatcher implements RowMatcher {
@@ -158,6 +217,51 @@ public final class RecordFilterCompiler {
                 }
             }
             return true;
+        }
+    }
+
+    private static final class Or2Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        Or2Matcher(RowMatcher a, RowMatcher b) {
+            this.a = a;
+            this.b = b;
+        }
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) || b.test(row);
+        }
+    }
+
+    private static final class Or3Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        private final RowMatcher c;
+        Or3Matcher(RowMatcher a, RowMatcher b, RowMatcher c) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+        }
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) || b.test(row) || c.test(row);
+        }
+    }
+
+    private static final class Or4Matcher implements RowMatcher {
+        private final RowMatcher a;
+        private final RowMatcher b;
+        private final RowMatcher c;
+        private final RowMatcher d;
+        Or4Matcher(RowMatcher a, RowMatcher b, RowMatcher c, RowMatcher d) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+            this.d = d;
+        }
+        @Override
+        public boolean test(StructAccessor row) {
+            return a.test(row) || b.test(row) || c.test(row) || d.test(row);
         }
     }
 
@@ -287,7 +391,7 @@ public final class RecordFilterCompiler {
         };
     }
 
-    private static int compareBinary(byte[] left, byte[] right, boolean signed) {
+    static int compareBinary(byte[] left, byte[] right, boolean signed) {
         return signed
                 ? BinaryComparator.compareSigned(left, right)
                 : BinaryComparator.compareUnsigned(left, right);
@@ -437,7 +541,7 @@ public final class RecordFilterCompiler {
     /// Walks the row through the captured intermediate struct path.
     /// Returns null if any intermediate struct is null. For top-level
     /// columns `path` is empty and the row itself is returned.
-    private static StructAccessor resolve(StructAccessor row, String[] path) {
+    static StructAccessor resolve(StructAccessor row, String[] path) {
         StructAccessor current = row;
         for (int i = 0; i < path.length; i++) {
             String segment = path[i];
@@ -449,7 +553,7 @@ public final class RecordFilterCompiler {
         return current;
     }
 
-    private static String[] pathSegments(FileSchema schema, int columnIndex) {
+    static String[] pathSegments(FileSchema schema, int columnIndex) {
         List<String> elements = schema.getColumn(columnIndex).fieldPath().elements();
         if (elements.size() <= 1) {
             return EMPTY_PATH;
@@ -461,7 +565,7 @@ public final class RecordFilterCompiler {
         return out;
     }
 
-    private static String leafName(FileSchema schema, int columnIndex) {
+    static String leafName(FileSchema schema, int columnIndex) {
         return schema.getColumn(columnIndex).fieldPath().leafName();
     }
 }

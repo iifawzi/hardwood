@@ -11,7 +11,8 @@ This design replaces the per-row interpreter with a compiler that produces one `
 The work is staged so each layer lands as its own change with its own measurable delta:
 
 1. **Stage 1** — Compile the predicate tree into a `RowMatcher` graph. Hoist field-name lookups, struct-path resolution, and operator switches out of the per-row loop.
-2. **Stage 3** — For top-level columns on a flat reader, bypass name-keyed accessors via projected-index access through `IndexedAccessor`.
+2. **Stage 2** — Replace the generic per-child loop in `And`/`Or` with fixed-arity classes (arities 2/3/4) so the JIT can inline through stable receiver-typed call sites.
+3. **Stage 3** — For top-level columns on a flat reader, bypass name-keyed accessors via projected-index access through `IndexedAccessor`.
 
 ---
 
@@ -36,7 +37,7 @@ public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema)
 | `Float`/`Double`/`Boolean`/`Binary` | Same shape; float/double use `Float.compare`/`Double.compare` to match the legacy NaN ordering |
 | `Int`/`Long`/`BinaryIn` | One-time sort; binary search above 16 entries, linear scan below |
 | `IsNull` / `IsNotNull` | Resolves intermediate struct path and returns `acc == null \|\| acc.isNull(name)` (and inverse) |
-| `And(children)` | Recursively compile each child, then a generic `AndNMatcher` over a `RowMatcher[]` |
+| `And(children)` | Recursively compile each child, then a fixed-arity matcher (see Stage 2) |
 | `Or(children)` | Same as `And` but disjunctive |
 
 Two concrete decisions that follow from the JIT-inlining argument:
@@ -78,9 +79,58 @@ Compile the predicate at reader-construction time and pass the resulting matcher
 
 ---
 
-## Step 2: Index-Based Fast Path (Stage 3)
+## Step 2: Fixed-Arity AND/OR Matchers (Stage 2)
 
-After Stage 1, the predicate-dispatch layer is significantly reduced. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at projected index `i`" without going through the name-keyed API.
+The Stage 1 implementation of `And`/`Or` was a generic `Object[]` walker:
+
+```java
+return row -> {
+    for (int i = 0; i < compiled.length; i++) {
+        if (!compiled[i].test(row)) return false;
+    }
+    return true;
+};
+```
+
+The bound check + array load are an inlining barrier — HotSpot cannot prove the receiver type at the per-iteration `compiled[i].test(row)` call site, so it leaves the leaf body behind a virtual call.
+
+Stage 2 replaces the loop with fixed-arity classes for arities 2/3/4. Each is a small final-field class whose body is a hand-written boolean expression:
+
+```java
+private static final class And3Matcher implements RowMatcher {
+    private final RowMatcher a, b, c;
+    And3Matcher(RowMatcher a, RowMatcher b, RowMatcher c) { ... }
+    @Override
+    public boolean test(StructAccessor row) {
+        return a.test(row) && b.test(row) && c.test(row);
+    }
+}
+```
+
+`compileAnd` / `compileOr` switch on `children.size()`:
+
+```java
+return switch (compiled.length) {
+    case 1 -> compiled[0];
+    case 2 -> new And2Matcher(compiled[0], compiled[1]);
+    case 3 -> new And3Matcher(compiled[0], compiled[1], compiled[2]);
+    case 4 -> new And4Matcher(compiled[0], compiled[1], compiled[2], compiled[3]);
+    default -> new AndNMatcher(compiled);
+};
+```
+
+Symmetric `Or2Matcher`/`Or3Matcher`/`Or4Matcher`. Arities ≥ 5 fall back to a generic `AndNMatcher` / `OrNMatcher` array walker — those shapes are rare and the fallback still benefits from a monomorphic outer call site.
+
+The leaf factories from Stage 1 produce a *distinct* synthetic class per `(type, operator)`. So when a query compiles to `And2Matcher(longGtLeaf, doubleLtLeaf)`, the `a.test(row)` and `b.test(row)` call sites inside `And2Matcher.test` see one specific receiver class each. HotSpot inlines through both, and the leaf bodies fold into the `And2Matcher.test` body — JIT-driven fusion without combinatorial source code.
+
+**Files:**
+- `core/src/main/java/dev/hardwood/internal/predicate/RecordFilterCompiler.java` (modify — add fixed-arity matchers)
+
+---
+
+## Step 3: Index-Based Fast Path (Stage 3)
+
+After Stage 2, the predicate-dispatch layer is roughly one CPU cycle per leaf in JMH isolation. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at projected index `i`" without going through the name-keyed API.
 
 ### New file: `internal/reader/IndexedAccessor.java`
 
@@ -166,18 +216,18 @@ Hardware: macOS aarch64 (Apple Silicon), Oracle JDK 25.0.3, Maven wrapper 3.9.12
 
 | Scenario | Avg time | Records/sec |
 |---|---:|---:|
-| No filter (baseline) | 21.2 ms | 472,509,126 |
-| Match-all (1 leaf, `id >= 0`) | 29.9 ms | 334,829,508 |
-| Selective (`id < 1%`) | 2.0 ms | 50,059,130 |
-| Compound match-all (`id >= 0 AND value < +inf`) | 53.1 ms | 188,323,445 |
-| Page+record combined (`id BETWEEN ... AND value < 500`) | 3.5 ms | 14,468,632 |
+| No filter (baseline) | 16.1 ms | 622,640,291 |
+| Match-all (1 leaf, `id >= 0`) | 26.6 ms | 375,664,925 |
+| Selective (`id < 1%`) | 1.8 ms | 54,317,317 |
+| Compound match-all (`id >= 0 AND value < +inf`) | 47.0 ms | 212,980,449 |
+| Page+record combined (`id BETWEEN ... AND value < 500`) | 2.8 ms | 17,858,593 |
 
 Headline ratios from this run:
 
-- **Match-all overhead: 41.1 %** (21 ms → 30 ms). Predicate-only cost ≈ `(29.9 − 21.2) / 10 M = 0.87 ns/row` — close to the JMH single-leaf floor.
-- **Selective speedup: 10.6×** (21 ms → 2 ms).
-- **Compound overhead: 150.9 %** (21 ms → 53 ms). Predicate-only cost ≈ `(53.1 − 21.2) / 10 M = 3.19 ns/row`.
-- **Page+record speedup: 6.1×** (21 ms → 3.5 ms).
+- **Match-all overhead: 65.7 %** (16 ms → 27 ms). Predicate-only cost ≈ `(26.6 − 16.1) / 10 M = 1.05 ns/row` — close to the JMH single-leaf floor.
+- **Selective speedup: 8.7×** (16 ms → 2 ms).
+- **Compound overhead: 192.3 %** (16 ms → 47 ms). Predicate-only cost ≈ `(47.0 − 16.1) / 10 M = 3.09 ns/row`.
+- **Page+record speedup: 5.7×** (16 ms → 2.8 ms).
 
 ### JMH micro-benchmark (`RecordFilterMicroBenchmark`)
 
@@ -185,18 +235,18 @@ Headline ratios from this run:
 
 | Shape | Legacy ns/op | Compiled ns/op | Speedup |
 |---|---:|---:|---:|
-| `single` (`id >= 0`) | 2.691 ± 0.020 | **0.516 ± 0.005** | **5.21×** |
-| `and2` | 9.069 ± 0.086 | **2.040 ± 0.034** | **4.45×** |
-| `and3` | 22.146 ± 0.186 | **8.085 ± 0.086** | **2.74×** |
-| `and4` | 32.022 ± 0.519 | **13.446 ± 0.068** | **2.38×** |
-| `or2` | 4.607 ± 0.024 | **0.839 ± 0.007** | **5.49×** |
-| `nested` (and-of-or) | 33.213 ± 0.404 | **10.702 ± 0.221** | **3.10×** |
-| `intIn5` | 3.796 ± 0.025 | **1.387 ± 0.027** | **2.74×** |
-| `intIn32` | 7.035 ± 0.045 | **3.180 ± 0.029** | **2.21×** |
+| `single` (`id >= 0`) | 2.693 ± 0.014 | **0.509 ± 0.008** | **5.29×** |
+| `and2` | 10.357 ± 0.435 | **0.576 ± 0.002** | **17.98×** |
+| `and3` | 21.999 ± 0.133 | **0.550 ± 0.009** | **40.00×** |
+| `and4` | 32.666 ± 0.219 | **0.633 ± 0.005** | **51.60×** |
+| `or2` | 4.755 ± 0.195 | **0.513 ± 0.011** | **9.27×** |
+| `nested` (and-of-or) | 33.872 ± 0.266 | **0.981 ± 0.007** | **34.53×** |
+| `intIn5` | 3.769 ± 0.010 | **1.441 ± 0.022** | **2.62×** |
+| `intIn32` | 7.040 ± 0.046 | **3.196 ± 0.011** | **2.20×** |
 
 (Errors are 99.9 % confidence intervals from JMH.)
 
-Single-leaf shapes (`single`, `or2`) get the largest relative wins because dispatch is the entire cost — Stage 1's compiled lambda + Stage 3's indexed access reduces that to a literal comparison plus an array load. Compound shapes (`and2`/`and3`/`and4`/`nested`) still pay for the generic `AndNMatcher`/`OrNMatcher` array walker — the per-iteration `compiled[i].test(row)` call site cannot be proven monomorphic by the JIT, so each leaf body is reached through a virtual call. A subsequent layer that materialises arity-2/3/4 matchers as fixed-field classes (deferred to a follow-up) would let the JIT inline through those call sites and collapse the compound bodies.
+The largest relative wins are on compound shapes — exactly where the legacy interpreter paid for recursion plus iterator allocation per row, and where the fixed-arity matchers from Stage 2 give the JIT stable receiver types to inline through. `IN`-list shapes win less in relative terms because the inner search dominates once the dispatch overhead is removed.
 
 ---
 
