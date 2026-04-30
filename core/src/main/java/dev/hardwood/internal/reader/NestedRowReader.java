@@ -13,7 +13,9 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.UUID;
 
+import dev.hardwood.internal.predicate.RecordFilterCompiler;
 import dev.hardwood.internal.predicate.ResolvedPredicate;
+import dev.hardwood.internal.predicate.RowMatcher;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.PqDoubleList;
@@ -134,7 +136,8 @@ public final class NestedRowReader implements RowReader {
         NestedRowReader reader = new NestedRowReader(buffers, workers, schema, projectedSchema);
         reader.initialize();
         if (filter != null) {
-            return new FilteredRowReader(reader, filter, schema);
+            RowMatcher matcher = RecordFilterCompiler.compile(filter, schema);
+            return new FilteredRowReader(reader, matcher);
         }
         return reader;
     }
