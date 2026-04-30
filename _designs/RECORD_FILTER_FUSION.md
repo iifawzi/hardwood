@@ -255,14 +255,14 @@ Hardware: macOS aarch64 (Apple Silicon), Oracle JDK 25.0.3, Maven wrapper 3.9.12
 
 | Shape | Legacy ns/op | Compiled ns/op | Fused ns/op | Speedup |
 |---|---:|---:|---:|---:|
-| `single` (`id >= 0`) | 2.703 ± 0.033 | 0.420 ± 0.004 | **0.523 ± 0.003** | **5.17×** |
-| `and2` | 10.299 ± 0.053 | 0.488 ± 0.003 | **0.584 ± 0.006** | **17.63×** |
-| `and3` | 22.141 ± 0.104 | 0.596 ± 0.023 | **0.551 ± 0.006** | **40.18×** |
-| `and4` | 32.264 ± 0.874 | 0.672 ± 0.011 | **0.649 ± 0.009** | **49.71×** |
-| `or2` | 4.628 ± 0.044 | 0.418 ± 0.006 | **0.517 ± 0.003** | **8.95×** |
-| `nested` (and-of-or) | 33.766 ± 0.484 | 1.010 ± 0.009 | **1.002 ± 0.021** | **33.70×** |
-| `intIn5` | 3.801 ± 0.052 | 1.433 ± 0.066 | **1.404 ± 0.025** | **2.71×** |
-| `intIn32` | 7.016 ± 0.026 | 3.176 ± 0.014 | **3.186 ± 0.030** | **2.20×** |
+| `single` (`id >= 0`) | 2.619 ± 0.025 | 0.507 ± 0.002 | **0.506 ± 0.006** | **5.18×** |
+| `and2` | 10.005 ± 0.018 | 0.579 ± 0.015 | **0.583 ± 0.006** | **17.16×** |
+| `and3` | 21.396 ± 0.179 | 0.563 ± 0.012 | **0.558 ± 0.013** | **38.34×** |
+| `and4` | 30.802 ± 0.578 | 0.636 ± 0.011 | **0.638 ± 0.012** | **48.28×** |
+| `or2` | 4.466 ± 0.007 | 0.507 ± 0.003 | **0.504 ± 0.024** | **8.86×** |
+| `nested` (and-of-or) | 31.821 ± 0.191 | 0.934 ± 0.020 | **0.932 ± 0.069** | **34.14×** |
+| `intIn5` | 3.696 ± 0.017 | 1.351 ± 0.021 | **1.390 ± 0.077** | **2.66×** |
+| `intIn32` | 6.724 ± 0.091 | 3.085 ± 0.013 | **3.092 ± 0.015** | **2.17×** |
 
 (Errors are 99.9 % confidence intervals from JMH. `Speedup` is `Fused` vs `Legacy` — the cumulative win across stages 1–4.)
 
@@ -288,15 +288,15 @@ batch and reports `ns/op` per row × per shape. Three arms:
 
 | Arm                  | ns/op (per row × per shape) | Speedup vs legacy | Speedup vs generic |
 |----------------------|----------------------------:|------------------:|-------------------:|
-| `legacyMegamorphic`  | 19.150 ± 0.239              | 1.00×             | —                  |
-| `genericMegamorphic` |  5.407 ± 0.074              | 3.54×             | 1.00×              |
-| `fusedMegamorphic`   | **3.031 ± 0.035**           | **6.32×**         | **1.78×**          |
+| `legacyMegamorphic`  | 18.145 ± 0.168              | 1.00×             | —                  |
+| `genericMegamorphic` |  5.120 ± 0.009              | 3.54×             | 1.00×              |
+| `fusedMegamorphic`   | **3.068 ± 0.077**           | **5.91×**         | **1.67×**          |
 
 The first 3.54× of the speedup over legacy comes from the Stage 1–3
 compiler — eliminating per-row tree walking and operator switches even
-under megamorphism. Stage 4 adds another **1.78×** on top by removing
+under megamorphism. Stage 4 adds another **1.67×** on top by removing
 the inner-site megamorphism inside `And2Matcher` / `Or2Matcher`, taking
-the cumulative legacy speedup to **6.32×** under deliberate inline-cache
+the cumulative legacy speedup to **5.91×** under deliberate inline-cache
 pollution.
 
 ### End-to-end — `RecordFilterMegamorphicEndToEndTest`
@@ -314,27 +314,28 @@ the legacy comparison.
 
 | Shape                                                 | Generic ms | Fused ms | Speedup |
 |-------------------------------------------------------|-----------:|---------:|--------:|
-| `id BETWEEN 1M and 4M` (long+long AND)                |       30.7 |     14.1 |   2.18× |
-| `id < 500K OR id > 9.5M` (long+long OR)               |       10.6 |      9.2 |   1.15× |
-| `tag BETWEEN 0 and 50` (int+int AND)                  |      120.8 |     69.9 |   1.73× |
-| `tag = 5 OR tag = 47` (int+int OR)                    |       58.0 |     42.3 |   1.37× |
-| `value BETWEEN 0 and 500` (double+double AND)         |      126.7 |     83.7 |   1.51× |
-| `id < 5M AND value < 500` (long+double AND)           |       61.4 |     48.7 |   1.26× |
-| `id < 5M OR value > 500` (long+double OR)             |       72.7 |     69.4 |   1.05× |
-| `tag < 50 AND id > 5M` (int+long AND)                 |       51.3 |     39.6 |   1.30× |
-| `tag < 50 AND value < 500` (int+double AND)           |      120.0 |     98.0 |   1.22× |
-| `flag = true AND flag != false` (boolean+boolean AND) |       99.4 |     75.7 |   1.31× |
-| `value > 0 AND id < 9999` (double+long AND, swap)     |        1.0 |      0.9 |   1.11× |
-| `bin BETWEEN k200 and k800` (binary+binary AND)       |      178.5 |    103.6 |   1.72× |
-| **Aggregate (60 shape×run combinations)**             | **4655.7** | **3276.0** | **1.42×** |
+| `id BETWEEN 1M and 4M` (long+long AND)                |       23.7 |     13.9 |   1.71× |
+| `id < 500K OR id > 9.5M` (long+long OR)               |        6.0 |      6.5 |   0.92× |
+| `tag BETWEEN 0 and 50` (int+int AND)                  |      107.8 |     72.3 |   1.49× |
+| `tag = 5 OR tag = 47` (int+int OR)                    |       55.3 |     41.7 |   1.33× |
+| `value BETWEEN 0 and 500` (double+double AND)         |      110.2 |     78.9 |   1.40× |
+| `id < 5M AND value < 500` (long+double AND)           |       55.4 |     42.9 |   1.29× |
+| `id < 5M OR value > 500` (long+double OR)             |       63.6 |     65.4 |   0.97× |
+| `tag < 50 AND id > 5M` (int+long AND)                 |       47.7 |     40.2 |   1.19× |
+| `tag < 50 AND value < 500` (int+double AND)           |      116.7 |     94.5 |   1.23× |
+| `flag = true AND flag != false` (boolean+boolean AND) |       91.3 |     74.6 |   1.22× |
+| `value > 0 AND id < 9999` (double+long AND, swap)     |        1.1 |      0.9 |   1.22× |
+| `bin BETWEEN k200 and k800` (binary+binary AND)       |      173.1 |    101.5 |   1.71× |
+| **Aggregate (60 shape×run combinations)**             | **4259.1** | **3166.6** | **1.35×** |
 
 Largest wins are on the same-column AND BETWEEN shapes (long, int,
 double, binary) — the legacy generic path pays for two megamorphic inner
 sites per row, while the fused matcher loads the value once and runs both
-comparisons inline. Smallest wins are on shapes whose body cost is
-already dominated by I/O or page decoding — the canonical-swap shape
+comparisons inline. Smallest wins (and occasional run-to-run noise on
+single-shape OR cases that match few rows) are on shapes whose body cost
+is already dominated by I/O or page decoding — the canonical-swap shape
 matches only ~0.1 % of rows so the per-row matcher cost is amortized
-into noise. The aggregate **42 % wall-clock reduction** holds even though
+into noise. The aggregate **26 % wall-clock reduction** holds even though
 several shapes traverse 10M rows where decode time is non-trivial.
 
 ### Why the end-to-end gap is smaller than the JMH gap

@@ -216,18 +216,18 @@ Hardware: macOS aarch64 (Apple Silicon), Oracle JDK 25.0.3, Maven wrapper 3.9.12
 
 | Scenario | Avg time | Records/sec |
 |---|---:|---:|
-| No filter (baseline) | 16.1 ms | 622,640,291 |
-| Match-all (1 leaf, `id >= 0`) | 26.6 ms | 375,664,925 |
-| Selective (`id < 1%`) | 1.8 ms | 54,317,317 |
-| Compound match-all (`id >= 0 AND value < +inf`) | 47.0 ms | 212,980,449 |
-| Page+record combined (`id BETWEEN ... AND value < 500`) | 2.8 ms | 17,858,593 |
+| No filter (baseline) | 16.2 ms | 617,655,684 |
+| Match-all (1 leaf, `id >= 0`) | 27.6 ms | 362,125,097 |
+| Selective (`id < 1%`) | 2.0 ms | 49,984,277 |
+| Compound match-all (`id >= 0 AND value < +inf`) | 43.8 ms | 228,401,085 |
+| Page+record combined (`id BETWEEN ... AND value < 500`) | 3.0 ms | 16,681,337 |
 
 Headline ratios from this run:
 
-- **Match-all overhead: 65.7 %** (16 ms → 27 ms). Predicate-only cost ≈ `(26.6 − 16.1) / 10 M = 1.05 ns/row` — close to the JMH single-leaf floor.
-- **Selective speedup: 8.7×** (16 ms → 2 ms).
-- **Compound overhead: 192.3 %** (16 ms → 47 ms). Predicate-only cost ≈ `(47.0 − 16.1) / 10 M = 3.09 ns/row`.
-- **Page+record speedup: 5.7×** (16 ms → 2.8 ms).
+- **Match-all overhead: 70.6 %** (16 ms → 28 ms). Predicate-only cost ≈ `(27.6 − 16.2) / 10 M = 1.14 ns/row` — close to the JMH single-leaf floor.
+- **Selective speedup: 8.1×** (16 ms → 2 ms).
+- **Compound overhead: 170.4 %** (16 ms → 44 ms). Predicate-only cost ≈ `(43.8 − 16.2) / 10 M = 2.76 ns/row`.
+- **Page+record speedup: 5.4×** (16 ms → 3.0 ms).
 
 ### JMH micro-benchmark (`RecordFilterMicroBenchmark`)
 
@@ -235,14 +235,14 @@ Headline ratios from this run:
 
 | Shape | Legacy ns/op | Compiled ns/op | Speedup |
 |---|---:|---:|---:|
-| `single` (`id >= 0`) | 2.693 ± 0.014 | **0.509 ± 0.008** | **5.29×** |
-| `and2` | 10.357 ± 0.435 | **0.576 ± 0.002** | **17.98×** |
-| `and3` | 21.999 ± 0.133 | **0.550 ± 0.009** | **40.00×** |
-| `and4` | 32.666 ± 0.219 | **0.633 ± 0.005** | **51.60×** |
-| `or2` | 4.755 ± 0.195 | **0.513 ± 0.011** | **9.27×** |
-| `nested` (and-of-or) | 33.872 ± 0.266 | **0.981 ± 0.007** | **34.53×** |
-| `intIn5` | 3.769 ± 0.010 | **1.441 ± 0.022** | **2.62×** |
-| `intIn32` | 7.040 ± 0.046 | **3.196 ± 0.011** | **2.20×** |
+| `single` (`id >= 0`) | 2.619 ± 0.025 | **0.507 ± 0.002** | **5.16×** |
+| `and2` | 10.005 ± 0.018 | **0.579 ± 0.015** | **17.28×** |
+| `and3` | 21.396 ± 0.179 | **0.563 ± 0.012** | **38.00×** |
+| `and4` | 30.802 ± 0.578 | **0.636 ± 0.011** | **48.43×** |
+| `or2` | 4.466 ± 0.007 | **0.507 ± 0.003** | **8.81×** |
+| `nested` (and-of-or) | 31.821 ± 0.191 | **0.934 ± 0.020** | **34.07×** |
+| `intIn5` | 3.696 ± 0.017 | **1.351 ± 0.021** | **2.74×** |
+| `intIn32` | 6.724 ± 0.091 | **3.085 ± 0.013** | **2.18×** |
 
 (Errors are 99.9 % confidence intervals from JMH.)
 
