@@ -158,7 +158,7 @@ Three-way equivalence check. For every fused (combo × connective × opA × opB 
 
 ### Existing tests
 
-- `RecordFilterCompilerTest` (Stage 1) and `RecordFilterIndexedTest` (Stage 3) continue to pass unchanged — fusion is transparent when the legacy oracle is used as the equivalence reference.
+- `RecordFilterCompilerTest` (Stage 1) and `RecordFilterIndexedTest` (Stage 2) continue to pass unchanged — fusion is transparent when the legacy oracle is used as the equivalence reference.
 - `./mvnw verify` continues to pass; no public API changes.
 
 ---
@@ -212,7 +212,7 @@ The harness runs all shapes under each mode (separate JVM invocations recommende
 
 ## Risks and Edge Cases
 
-- **Cast safety in indexed fusion.** Indexed leaves cast the row to `IndexedAccessor`. The cast is safe by construction — `RecordFilterFusionIndexed.tryFuseAnd2` / `tryFuseOr2` is reached only via the projection-aware `RecordFilterCompiler.compile` overload, which is only invoked from `FlatRowReader` (which `implements IndexedAccessor`). Same contract as the indexed leaves introduced in Stage 3.
+- **Cast safety in indexed fusion.** Indexed leaves cast the row to `IndexedAccessor`. The cast is safe by construction — `RecordFilterFusionIndexed.tryFuseAnd2` / `tryFuseOr2` is reached only via the projection-aware `RecordFilterCompiler.compile` overload, which is only invoked from `FlatRowReader` (which `implements IndexedAccessor`). Same contract as the indexed leaves introduced in Stage 2.
 - **Canonicalisation correctness.** Cross-type AND/OR canonicalisation relies on commutativity. Both `And` and `Or` are commutative regardless of leaf order or null-yielding leaves; the legacy evaluator uses the same commutative semantics via short-circuit on first match/miss. Three-way equivalence tests cover both orderings.
 - **Same-column fusion of intermediate struct paths.** Fusion is allowed for same-column same-type when both leaves resolve identical intermediate struct paths. Different paths (e.g. `outer.x` and `inner.x`) compare by `columnIndex`, which is unique per leaf in the file schema, so the same-column branch only fires when the actual physical column matches.
 - **Outer-site megamorphism.** Stage 4 does not eliminate megamorphism at `FilteredRowReader.hasNext`'s `matcher.test(row)` site. The cost is bounded — one inline-cache miss per row instead of three — and is largely hidden for long single-query scans by C2's speculative inlining. Workloads that rapidly interleave many short queries pay more. See _Future work_ below.
@@ -306,7 +306,7 @@ bin string)`, 5 measurement runs per shape. Same 12 query shapes as the JMH
 megamorphic micro, executed sequentially through `ParquetFileReader.buildRowReader()`.
 Two separate JVM invocations — one with `-Dhardwood.recordfilter.fusion=true`,
 one with `=false` — to keep the static `FUSION_ENABLED` flag clean. The
-"generic" column is the Stage 3 baseline (compiled but not fused), not
+"generic" column is the Stage 1–3 baseline (compiled but not fused), not
 the legacy interpreter — `FilteredRowReader` uses compiled matchers
 unconditionally, so the legacy interpreter is not reachable through the
 end-to-end reader path. Use the JMH `legacyMegamorphic` arm above for

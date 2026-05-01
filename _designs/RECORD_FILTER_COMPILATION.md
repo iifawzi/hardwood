@@ -11,8 +11,8 @@ This design replaces the per-row interpreter with a compiler that produces one `
 The work is staged so each layer lands as its own change with its own measurable delta:
 
 1. **Stage 1** — Compile the predicate tree into a `RowMatcher` graph. Hoist field-name lookups, struct-path resolution, and operator switches out of the per-row loop.
-2. **Stage 2** — Replace the generic per-child loop in `And`/`Or` with fixed-arity classes (arities 2/3/4) so the JIT can inline through stable receiver-typed call sites.
-3. **Stage 3** — For top-level columns on a flat reader, bypass name-keyed accessors via projected-index access through `IndexedAccessor`.
+2. **Stage 2** — For top-level columns on a flat reader, bypass name-keyed accessors via projected-index access through `IndexedAccessor`.
+3. **Stage 3** — Replace the generic per-child loop in `And`/`Or` with fixed-arity classes (arities 2/3/4) so the JIT can inline through stable receiver-typed call sites.
 
 ---
 
@@ -37,7 +37,7 @@ public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema)
 | `Float`/`Double`/`Boolean`/`Binary` | Same shape; float/double use `Float.compare`/`Double.compare` to match the legacy NaN ordering |
 | `Int`/`Long`/`BinaryIn` | One-time sort; binary search above 16 entries, linear scan below |
 | `IsNull` / `IsNotNull` | Resolves intermediate struct path and returns `acc == null \|\| acc.isNull(name)` (and inverse) |
-| `And(children)` | Recursively compile each child, then a fixed-arity matcher (see Stage 2) |
+| `And(children)` | Recursively compile each child, then a fixed-arity matcher (see Stage 3) |
 | `Or(children)` | Same as `And` but disjunctive |
 
 Two concrete decisions that follow from the JIT-inlining argument:
@@ -79,58 +79,9 @@ Compile the predicate at reader-construction time and pass the resulting matcher
 
 ---
 
-## Step 2: Fixed-Arity AND/OR Matchers (Stage 2)
+## Step 2: Index-Based Fast Path (Stage 2)
 
-The Stage 1 implementation of `And`/`Or` was a generic `Object[]` walker:
-
-```java
-return row -> {
-    for (int i = 0; i < compiled.length; i++) {
-        if (!compiled[i].test(row)) return false;
-    }
-    return true;
-};
-```
-
-The bound check + array load are an inlining barrier — HotSpot cannot prove the receiver type at the per-iteration `compiled[i].test(row)` call site, so it leaves the leaf body behind a virtual call.
-
-Stage 2 replaces the loop with fixed-arity classes for arities 2/3/4. Each is a small final-field class whose body is a hand-written boolean expression:
-
-```java
-private static final class And3Matcher implements RowMatcher {
-    private final RowMatcher a, b, c;
-    And3Matcher(RowMatcher a, RowMatcher b, RowMatcher c) { ... }
-    @Override
-    public boolean test(StructAccessor row) {
-        return a.test(row) && b.test(row) && c.test(row);
-    }
-}
-```
-
-`compileAnd` / `compileOr` switch on `children.size()`:
-
-```java
-return switch (compiled.length) {
-    case 1 -> compiled[0];
-    case 2 -> new And2Matcher(compiled[0], compiled[1]);
-    case 3 -> new And3Matcher(compiled[0], compiled[1], compiled[2]);
-    case 4 -> new And4Matcher(compiled[0], compiled[1], compiled[2], compiled[3]);
-    default -> new AndNMatcher(compiled);
-};
-```
-
-Symmetric `Or2Matcher`/`Or3Matcher`/`Or4Matcher`. Arities ≥ 5 fall back to a generic `AndNMatcher` / `OrNMatcher` array walker — those shapes are rare and the fallback still benefits from a monomorphic outer call site.
-
-The leaf factories from Stage 1 produce a *distinct* synthetic class per `(type, operator)`. So when a query compiles to `And2Matcher(longGtLeaf, doubleLtLeaf)`, the `a.test(row)` and `b.test(row)` call sites inside `And2Matcher.test` see one specific receiver class each. HotSpot inlines through both, and the leaf bodies fold into the `And2Matcher.test` body — JIT-driven fusion without combinatorial source code.
-
-**Files:**
-- `core/src/main/java/dev/hardwood/internal/predicate/RecordFilterCompiler.java` (modify — add fixed-arity matchers)
-
----
-
-## Step 3: Index-Based Fast Path (Stage 3)
-
-After Stage 2, the predicate-dispatch layer is roughly one CPU cycle per leaf in JMH isolation. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at projected index `i`" without going through the name-keyed API.
+After Stage 1, single-leaf dispatch is roughly one CPU cycle per leaf in JMH isolation. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at projected index `i`" without going through the name-keyed API.
 
 ### New file: `internal/reader/IndexedAccessor.java`
 
@@ -185,6 +136,55 @@ Switch the constructor-time `RecordFilterCompiler.compile(filter, schema)` to th
 - `core/src/main/java/dev/hardwood/internal/reader/FlatRowReader.java` (modify — implement `IndexedAccessor`, use 3-arg compile)
 - `core/src/main/java/dev/hardwood/internal/predicate/RecordFilterCompiler.java` (modify — add 3-arg overload, indexed-leaf factories)
 - `core/src/test/java/dev/hardwood/internal/predicate/RecordFilterIndexedTest.java` (new — three-way equivalence)
+
+---
+
+## Step 3: Fixed-Arity AND/OR Matchers (Stage 3)
+
+The Stage 1 implementation of `And`/`Or` was a generic `Object[]` walker:
+
+```java
+return row -> {
+    for (int i = 0; i < compiled.length; i++) {
+        if (!compiled[i].test(row)) return false;
+    }
+    return true;
+};
+```
+
+The bound check + array load are an inlining barrier — HotSpot cannot prove the receiver type at the per-iteration `compiled[i].test(row)` call site, so it leaves the leaf body behind a virtual call.
+
+Stage 3 replaces the loop with fixed-arity classes for arities 2/3/4. Each is a small final-field class whose body is a hand-written boolean expression:
+
+```java
+private static final class And3Matcher implements RowMatcher {
+    private final RowMatcher a, b, c;
+    And3Matcher(RowMatcher a, RowMatcher b, RowMatcher c) { ... }
+    @Override
+    public boolean test(StructAccessor row) {
+        return a.test(row) && b.test(row) && c.test(row);
+    }
+}
+```
+
+`compileAnd` / `compileOr` switch on `children.size()`:
+
+```java
+return switch (compiled.length) {
+    case 1 -> compiled[0];
+    case 2 -> new And2Matcher(compiled[0], compiled[1]);
+    case 3 -> new And3Matcher(compiled[0], compiled[1], compiled[2]);
+    case 4 -> new And4Matcher(compiled[0], compiled[1], compiled[2], compiled[3]);
+    default -> new AndNMatcher(compiled);
+};
+```
+
+Symmetric `Or2Matcher`/`Or3Matcher`/`Or4Matcher`. Arities ≥ 5 fall back to a generic `AndNMatcher` / `OrNMatcher` array walker — those shapes are rare and the fallback still benefits from a monomorphic outer call site.
+
+The leaf factories from Stages 1 and 2 produce a *distinct* synthetic class per `(type, operator)`. So when a query compiles to `And2Matcher(longGtLeaf, doubleLtLeaf)`, the `a.test(row)` and `b.test(row)` call sites inside `And2Matcher.test` see one specific receiver class each. HotSpot inlines through both, and the leaf bodies fold into the `And2Matcher.test` body — JIT-driven fusion without combinatorial source code.
+
+**Files:**
+- `core/src/main/java/dev/hardwood/internal/predicate/RecordFilterCompiler.java` (modify — add fixed-arity matchers)
 
 ---
 
@@ -246,7 +246,7 @@ Headline ratios from this run:
 
 (Errors are 99.9 % confidence intervals from JMH.)
 
-The largest relative wins are on compound shapes — exactly where the legacy interpreter paid for recursion plus iterator allocation per row, and where the fixed-arity matchers from Stage 2 give the JIT stable receiver types to inline through. `IN`-list shapes win less in relative terms because the inner search dominates once the dispatch overhead is removed.
+The largest relative wins are on compound shapes — exactly where the legacy interpreter paid for recursion plus iterator allocation per row, and where the fixed-arity matchers from Stage 3 give the JIT stable receiver types to inline through. `IN`-list shapes win less in relative terms because the inner search dominates once the dispatch overhead is removed.
 
 ---
 
