@@ -194,30 +194,32 @@ git commit -m "#193 Scaffold RecordFilterFusion with null-returning stubs"
  */
 package dev.hardwood.internal.predicate;
 
+import java.util.function.IntUnaryOperator;
+
 import dev.hardwood.reader.FilterPredicate.Operator;
+import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.StructAccessor;
-import dev.hardwood.internal.reader.IndexedAccessor;
 import dev.hardwood.schema.FileSchema;
-import dev.hardwood.schema.ProjectedSchema;
 
 /// Indexed-access counterpart to [RecordFilterFusion]. Used when the
-/// reader implements [IndexedAccessor] (i.e. `FlatRowReader`) and both
-/// leaves operate on top-level columns. The cast is safe by construction:
-/// the projection-aware compile entry point in [RecordFilterCompiler] is
-/// only invoked from readers that guarantee the row implements
-/// [IndexedAccessor].
+/// row is a [RowReader] (i.e. `FlatRowReader` or `NestedRowReader`)
+/// and both leaves operate on top-level columns the reader can address
+/// through its `getXxx(int)` accessors. The cast is safe by
+/// construction: the 3-arg compile entry point in [RecordFilterCompiler]
+/// is only invoked from readers that guarantee the row implements
+/// [RowReader].
 final class RecordFilterFusionIndexed {
 
     private RecordFilterFusionIndexed() {
     }
 
     static RowMatcher tryFuseAnd2(ResolvedPredicate a, ResolvedPredicate b,
-            FileSchema schema, ProjectedSchema projection) {
+            FileSchema schema, IntUnaryOperator topLevelFieldIndex) {
         return null;
     }
 
     static RowMatcher tryFuseOr2(ResolvedPredicate a, ResolvedPredicate b,
-            FileSchema schema, ProjectedSchema projection) {
+            FileSchema schema, IntUnaryOperator topLevelFieldIndex) {
         return null;
     }
 
@@ -246,22 +248,22 @@ Replace the existing body with:
 
 ```java
 private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
-        ProjectedSchema projection) {
+        IntUnaryOperator topLevelFieldIndex) {
     if (FUSION_ENABLED && children.size() == 2) {
-        if (projection != null) {
-            RowMatcher fused = RecordFilterFusionIndexed.tryFuseAnd2(
-                    children.get(0), children.get(1), schema, projection);
+        ResolvedPredicate a = children.get(0);
+        ResolvedPredicate b = children.get(1);
+        if (topLevelFieldIndex != null) {
+            RowMatcher fused = RecordFilterFusionIndexed.tryFuseAnd2(a, b, schema, topLevelFieldIndex);
             if (fused != null) {
                 return fused;
             }
         }
-        RowMatcher fused = RecordFilterFusion.tryFuseAnd2(
-                children.get(0), children.get(1), schema);
+        RowMatcher fused = RecordFilterFusion.tryFuseAnd2(a, b, schema);
         if (fused != null) {
             return fused;
         }
     }
-    RowMatcher[] compiled = compileAll(children, schema, projection);
+    RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
     return switch (compiled.length) {
         case 1 -> compiled[0];
         case 2 -> new And2Matcher(compiled[0], compiled[1]);
@@ -299,7 +301,7 @@ Before writing any fusion lambdas, create the test harness so each combo can be 
 
 - [ ] **Step 1: Create the file with the three-way equivalence helper.**
 
-The helper compiles the predicate three ways: legacy oracle, name-keyed compile (no projection), and indexed compile (with projection). All three must agree. The test then asserts the agreed value matches the parametrized expected value.
+The helper compiles the predicate three ways: legacy oracle, name-keyed compile (no callback), and indexed compile (with the `topLevelFieldIndex` callback). All three must agree. The test then asserts the agreed value matches the parametrized expected value.
 
 ```java
 /*
@@ -317,12 +319,13 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.IntUnaryOperator;
 
-import dev.hardwood.internal.reader.IndexedAccessor;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.metadata.RepetitionType;
 import dev.hardwood.metadata.SchemaElement;
 import dev.hardwood.reader.FilterPredicate.Operator;
+import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.PqDoubleList;
 import dev.hardwood.row.PqIntList;
 import dev.hardwood.row.PqInterval;
@@ -351,17 +354,18 @@ class RecordFilterFusionTest {
     /// fusion is bypassed regardless of the FUSION_ENABLED flag — this
     /// keeps the test independent of the system property at test time.
     static void assertEquivalent(ResolvedPredicate predicate, StructAccessor row,
-            FileSchema schema, ProjectedSchema projection, boolean expected) {
+            FileSchema schema, IntUnaryOperator topLevelFieldIndex, boolean expected) {
         boolean legacy = RecordFilterEvaluator.matchesRow(predicate, row, schema);
         boolean fusedName = RecordFilterCompiler.compile(predicate, schema).test(row);
-        boolean fusedIndexed = RecordFilterCompiler.compile(predicate, schema, projection).test(row);
+        boolean fusedIndexed = RecordFilterCompiler.compile(predicate, schema, topLevelFieldIndex).test(row);
         assertThat(fusedName).as("legacy/fused-name disagreed for %s", predicate).isEqualTo(legacy);
         assertThat(fusedIndexed).as("legacy/fused-indexed disagreed for %s", predicate).isEqualTo(legacy);
         assertThat(legacy).as("legacy oracle disagreed with expected for %s", predicate).isEqualTo(expected);
     }
 
-    static ProjectedSchema projectAll(FileSchema schema) {
-        return ProjectedSchema.create(schema, ColumnProjection.all());
+    static IntUnaryOperator projectAll(FileSchema schema) {
+        ProjectedSchema projected = ProjectedSchema.create(schema, ColumnProjection.all());
+        return projected::toProjectedIndex;
     }
 
     // Schema helpers added per type-combo task — see RecordFilterIndexedTest
@@ -406,7 +410,7 @@ This is the canonical reference combo. Get it fully tested and committed before 
 void longLongAndDiff(Operator opA, long vA, Operator opB, long vB,
         long aVal, long bVal, boolean expected) {
     FileSchema schema = twoLongSchema("a", "b");
-    ProjectedSchema projection = projectAll(schema);
+    IntUnaryOperator projection = projectAll(schema);
     TwoLongIndexedRow row = new TwoLongIndexedRow("a", aVal, false, "b", bVal, false);
     ResolvedPredicate p = new ResolvedPredicate.And(List.of(
             new ResolvedPredicate.LongPredicate(0, opA, vA),
@@ -455,7 +459,7 @@ private static boolean evalLong(Operator op, long actual, long target) {
 @Test
 void longLongAndDiff_nullLeafShortCircuits() {
     FileSchema schema = twoLongSchema("a", "b");
-    ProjectedSchema projection = projectAll(schema);
+    IntUnaryOperator projection = projectAll(schema);
     ResolvedPredicate p = new ResolvedPredicate.And(List.of(
             new ResolvedPredicate.LongPredicate(0, Operator.GT_EQ, 0L),
             new ResolvedPredicate.LongPredicate(1, Operator.LT, 1000L)));
@@ -703,7 +707,7 @@ private static RowMatcher longLongOrDiff(String[] pA, String nA, Operator opA, l
 void longLongOrDiff(Operator opA, long vA, Operator opB, long vB,
         long aVal, long bVal, boolean expected) {
     FileSchema schema = twoLongSchema("a", "b");
-    ProjectedSchema projection = projectAll(schema);
+    IntUnaryOperator projection = projectAll(schema);
     TwoLongIndexedRow row = new TwoLongIndexedRow("a", aVal, false, "b", bVal, false);
     ResolvedPredicate p = new ResolvedPredicate.Or(List.of(
             new ResolvedPredicate.LongPredicate(0, opA, vA),
@@ -726,7 +730,7 @@ static Stream<Arguments> longLongOrDiffCases() {
 @Test
 void longLongOrDiff_nullLeafEvaluatesOther() {
     FileSchema schema = twoLongSchema("a", "b");
-    ProjectedSchema projection = projectAll(schema);
+    IntUnaryOperator projection = projectAll(schema);
     ResolvedPredicate p = new ResolvedPredicate.Or(List.of(
             new ResolvedPredicate.LongPredicate(0, Operator.GT_EQ, 100L),
             new ResolvedPredicate.LongPredicate(1, Operator.LT, 1000L)));
@@ -778,7 +782,7 @@ The commit message convention per combo: `#193 Implement <combo> <connective> fu
 
 ### Task 4.4: `binary + binary` AND + OR
 
-- [ ] **Step 1:** Implement `fuseBinaryBinaryAnd`, `binaryBinaryAndDiff`, `binaryRangeAnd`, plus OR. Use `getBinary` / `getBinaryAt`. Comparison goes through `BinaryComparator.compareSigned` or `compareUnsigned` selected per leaf at compile time from `BinaryPredicate.signed`.
+- [ ] **Step 1:** Implement `fuseBinaryBinaryAnd`, `binaryBinaryAndDiff`, `binaryRangeAnd`, plus OR. Use `getBinary(name)` (name-keyed) / `getBinary(int)` (indexed, on [RowReader]). Comparison goes through `BinaryComparator.compareSigned` or `compareUnsigned` selected per leaf at compile time from `BinaryPredicate.signed`.
 - [ ] **Step 2:** For `binaryRangeAnd` (same column), load the byte[] reference once, then run two comparator calls against the two operand byte-arrays.
 - [ ] **Step 3:** Add tests over UTF-8 strings and pure binary cases. The existing `BinaryPredicate.signed` flag is column-determined for same-column same-type fusion; for diff-column, both leaves carry their own flags.
 - [ ] **Step 4:** Run + commit.
@@ -816,7 +820,7 @@ if (a instanceof ResolvedPredicate.DoublePredicate da && b instanceof ResolvedPr
 
 ## Chunk 5: Indexed Variants in `RecordFilterFusionIndexed`
 
-`RecordFilterFusionIndexed` is the projected-index counterpart. Same matrix, same null-handling, but the row is cast to `IndexedAccessor` once and indexed reads replace name-keyed reads.
+`RecordFilterFusionIndexed` is the indexed-access counterpart. Same matrix, same null-handling, but the row is cast to [RowReader] once and indexed reads (`getX(int)` / `isNull(int)`) replace name-keyed reads.
 
 ### Task 5.1: Common indexed leaf access
 
@@ -824,13 +828,14 @@ if (a instanceof ResolvedPredicate.DoublePredicate da && b instanceof ResolvedPr
 
 ```java
 static RowMatcher tryFuseAnd2(ResolvedPredicate a, ResolvedPredicate b,
-        FileSchema schema, ProjectedSchema projection) {
+        FileSchema schema, IntUnaryOperator topLevelFieldIndex) {
     int colA = leafColumnIndex(a);
     int colB = leafColumnIndex(b);
     if (colA < 0 || colB < 0) return null;
     if (!isTopLevel(schema, colA) || !isTopLevel(schema, colB)) return null;
-    int idxA = projection.toProjectedIndex(colA);
-    int idxB = projection.toProjectedIndex(colB);
+    int idxA = topLevelFieldIndex.applyAsInt(colA);
+    int idxB = topLevelFieldIndex.applyAsInt(colB);
+    if (idxA < 0 || idxB < 0) return null;
     // ... type dispatch as in RecordFilterFusion ...
 }
 
@@ -850,9 +855,9 @@ private static int leafColumnIndex(ResolvedPredicate p) {
 
 ```java
 case EQ -> row -> {
-    IndexedAccessor a = (IndexedAccessor) row;
-    if (a.isNullAt(idxA) || a.getLongAt(idxA) != vA) return false;
-    return !a.isNullAt(idxB) && a.getLongAt(idxB) == vB;
+    RowReader r = (RowReader) row;
+    if (r.isNull(idxA) || r.getLong(idxA) != vA) return false;
+    return !r.isNull(idxB) && r.getLong(idxB) == vB;
 };
 ```
 
@@ -860,7 +865,7 @@ The cast is safe by construction (see spec, "Cast safety in indexed fusion").
 
 ### Task 5.2: Mirror every Chunk 4 combo in `RecordFilterFusionIndexed`
 
-For each combo implemented in Chunk 4, add the indexed equivalent in `RecordFilterFusionIndexed`. The structure is mechanical: replace `resolve(row, path) → sX` with `(IndexedAccessor) row → a` and replace `getX(name)` / `isNull(name)` with `getXAt(idx)` / `isNullAt(idx)`. No path resolution loop.
+For each combo implemented in Chunk 4, add the indexed equivalent in `RecordFilterFusionIndexed`. The structure is mechanical: replace `resolve(row, path) → sX` with `(RowReader) row → r` and replace `getX(name)` / `isNull(name)` with `getX(idx)` / `isNull(idx)` on the [RowReader] reference. No path resolution loop.
 
 - [ ] One commit per combo: `#193 Implement <combo> <connective> indexed fusion`.
 

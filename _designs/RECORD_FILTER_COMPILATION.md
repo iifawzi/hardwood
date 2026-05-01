@@ -6,12 +6,12 @@
 
 Record-level filtering evaluates a `ResolvedPredicate` tree against every decoded row that survived page-level pruning. The original implementation walked the predicate tree in [`RecordFilterEvaluator.matchesRow`] for *each* row, paying a sealed-type switch over 12 predicate kinds, an operator switch (6 operators), name-keyed accessor lookups (`StructAccessor.isNull(name)` and `getX(name)` both go through a `name → index` hash), and iterator allocation for every `And`/`Or` recursion. None of this work depends on the row — only on the predicate tree, which is fixed at reader-construction time.
 
-This design replaces the per-row interpreter with a compiler that produces one `RowMatcher` per query. The compiler resolves field paths, picks the right operator, and bakes both into a small lambda whose call site is monomorphic per query — so HotSpot inlines the comparison directly. A subsequent layer translates top-level columns to projected-index access and routes through a narrow `IndexedAccessor` interface implemented by `FlatRowReader`, eliminating the `name → index` hash on the hot path.
+This design replaces the per-row interpreter with a compiler that produces one `RowMatcher` per query. The compiler resolves field paths, picks the right operator, and bakes both into a small lambda whose call site is monomorphic per query — so HotSpot inlines the comparison directly. A subsequent layer translates top-level columns to indexed access via the `getXxx(int)` accessors already exposed on [RowReader], eliminating the `name → index` hash on the hot path.
 
 The work is staged so each layer lands as its own change with its own measurable delta:
 
 1. **Stage 1** — Compile the predicate tree into a `RowMatcher` graph. Hoist field-name lookups, struct-path resolution, and operator switches out of the per-row loop.
-2. **Stage 2** — For top-level columns on a flat reader, bypass name-keyed accessors via projected-index access through `IndexedAccessor`.
+2. **Stage 2** — For top-level columns, bypass name-keyed accessors via the indexed `getXxx(int)` accessors on [RowReader].
 3. **Stage 3** — Replace the generic per-child loop in `And`/`Or` with fixed-arity classes (arities 2/3/4) so the JIT can inline through stable receiver-typed call sites.
 
 ---
@@ -81,60 +81,55 @@ Compile the predicate at reader-construction time and pass the resulting matcher
 
 ## Step 2: Index-Based Fast Path (Stage 2)
 
-After Stage 1, single-leaf dispatch is roughly one CPU cycle per leaf in JMH isolation. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at projected index `i`" without going through the name-keyed API.
+After Stage 1, single-leaf dispatch is roughly one CPU cycle per leaf in JMH isolation. End-to-end, however, every leaf still pays for `StructAccessor.getLong(name)` and `isNull(name)`, both of which run a custom `name → index` hash on the row. For top-level columns, that index is known *at compile time* — the compiler just needs a way to express "read the value at field index `i`" without going through the name-keyed API.
 
-### New file: `internal/reader/IndexedAccessor.java`
+### Use the indexed accessors on `RowReader`
 
-Narrow internal interface declaring projected-index accessor methods:
+[RowReader] already exposes a parallel set of indexed accessors — `getInt(int)`, `getLong(int)`, `isNull(int)`, etc. — alongside the name-keyed [StructAccessor] methods it inherits. The `int` argument is the field index the *reader* uses, not a file column index:
 
-```java
-public interface IndexedAccessor {
-    boolean isNullAt(int projectedIndex);
-    int getIntAt(int projectedIndex);
-    long getLongAt(int projectedIndex);
-    float getFloatAt(int projectedIndex);
-    double getDoubleAt(int projectedIndex);
-    boolean getBooleanAt(int projectedIndex);
-    byte[] getBinaryAt(int projectedIndex);
-}
-```
+- For [dev.hardwood.internal.reader.FlatRowReader], the field index is the projected leaf-column index, since every leaf is a top-level field.
+- For [dev.hardwood.internal.reader.NestedRowReader], the field index is the projected top-level field index in the row reader's projected fields.
 
-The argument is the column's index in the reader's *projection*, not the file schema. `FlatRowReader` already stores values in projection order, so the implementation is one-line delegates to the existing int-indexed accessor methods.
-
-### Modify `internal/reader/FlatRowReader.java`
-
-`implements IndexedAccessor`, with the seven delegate methods. No data-layout change.
+No new interface is introduced; Stage 2 piggybacks on the indexed accessors already on [RowReader].
 
 ### Modify `internal/predicate/RecordFilterCompiler.java`
 
-Add a 3-arg overload:
+Add a 3-arg overload that takes a callback mapping a *file leaf-column index* to the *reader field index* the indexed accessors expect:
 
 ```java
-public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema, ProjectedSchema projection);
+public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema,
+        IntUnaryOperator topLevelFieldIndex);
 ```
 
-For each leaf, if `projection != null` and the column's `FieldPath` has length 1 (top-level), the compiler translates the file column index to the projected index via `projection.toProjectedIndex(...)` and emits an indexed-leaf lambda whose body casts the row to `IndexedAccessor` and reads through the projected index. Nested paths fall back to the name-keyed factories regardless — indexed access only applies to flat top-level columns.
+For each leaf, if `topLevelFieldIndex != null` and the column's `FieldPath` has length 1 (top-level), the compiler translates the file column index via the callback and emits an indexed-leaf lambda whose body casts the row to [RowReader] and reads through the resolved field index. Callers signal "not directly addressable" by returning `-1` from the callback — the compiler then falls back to the name-keyed leaf for that column. Nested paths (path length > 1) always fall back to the name-keyed factories regardless.
 
-Indexed leaves are inline factories on `RecordFilterCompiler` paralleling the name-keyed ones — one per `(type, operator)` pair, plus `IsNull` / `IsNotNull`. Compound matchers are unchanged: `compileAnd` and `compileOr` thread `projection` through to their children.
+Indexed leaves are inline factories on `RecordFilterCompiler` paralleling the name-keyed ones — one per `(type, operator)` pair, plus `IsNull` / `IsNotNull`. Compound matchers are unchanged: `compileAnd` and `compileOr` thread the callback through to their children.
 
-The cast `(IndexedAccessor) row` is safe by construction. Only `FlatRowReader.create` calls the 3-arg overload, and `FlatRowReader implements IndexedAccessor`. A misuse fails fast with `ClassCastException`.
+The cast `(RowReader) row` is safe by construction. Only `FlatRowReader` and `NestedRowReader` invoke the 3-arg overload, and both implement [RowReader]. A misuse fails fast with `ClassCastException`.
 
-### Why nested readers stay name-keyed
+### How each reader maps file columns to field indices
 
-`NestedRowReader` exposes per-batch indexes that change as nested levels are traversed; it does not implement `IndexedAccessor`. Nested predicates therefore continue to use name-keyed leaves. This is also why the indexed path is gated on `isTopLevel(schema, columnIndex)` — even a flat reader's compiler must fall back to name-based access for any leaf whose path traverses a struct.
+- `FlatRowReader.create` passes `projectedSchema::toProjectedIndex` — every leaf is top-level, so the projected leaf-column index *is* the reader's field index.
+- `NestedRowReader.create` precomputes a `fileLeafColumnIndex → projectedTopLevelFieldIndex` lookup that returns `-1` for any column whose path is not a single top-level element or whose top-level field is not in the projection. The compiler then emits indexed leaves for projected top-level columns and falls back to name-keyed leaves for columns inside nested structs.
+
+This is why the indexed path is gated on `isTopLevel(schema, columnIndex)` — even within a reader that supports indexed access, the compiler must fall back to name-based access for any leaf whose path traverses a struct.
 
 ### Modify `internal/reader/FlatRowReader.java` (compile call)
 
-Switch the constructor-time `RecordFilterCompiler.compile(filter, schema)` to the 3-arg overload, passing the reader's `projectedSchema`.
+Switch the constructor-time `RecordFilterCompiler.compile(filter, schema)` to the 3-arg overload, passing `projectedSchema::toProjectedIndex`.
+
+### Modify `internal/reader/NestedRowReader.java` (compile call)
+
+Build the top-level lookup array at construction time and pass `col -> topLevelLookup[col]` to the 3-arg overload.
 
 ### Equivalence
 
-`RecordFilterIndexedTest` exercises the indexed path. For every primitive single-leaf predicate and all 36 `(opA, opB)` pairs of compound shapes, it builds a stub row implementing both `StructAccessor` and `IndexedAccessor`, then asserts that the indexed compile path, the name-keyed compile path, and the legacy `RecordFilterEvaluator.matchesRow` oracle all return the same boolean.
+`RecordFilterIndexedTest` exercises the indexed path. For every primitive single-leaf predicate and all 36 `(opA, opB)` pairs of compound shapes, it builds a stub row implementing [RowReader], then asserts that the indexed compile path, the name-keyed compile path, and the legacy `RecordFilterEvaluator.matchesRow` oracle all return the same boolean.
 
 **Files:**
-- `core/src/main/java/dev/hardwood/internal/reader/IndexedAccessor.java` (new)
-- `core/src/main/java/dev/hardwood/internal/reader/FlatRowReader.java` (modify — implement `IndexedAccessor`, use 3-arg compile)
 - `core/src/main/java/dev/hardwood/internal/predicate/RecordFilterCompiler.java` (modify — add 3-arg overload, indexed-leaf factories)
+- `core/src/main/java/dev/hardwood/internal/reader/FlatRowReader.java` (modify — call the 3-arg overload)
+- `core/src/main/java/dev/hardwood/internal/reader/NestedRowReader.java` (modify — call the 3-arg overload with the top-level lookup)
 - `core/src/test/java/dev/hardwood/internal/predicate/RecordFilterIndexedTest.java` (new — three-way equivalence)
 
 ---
@@ -256,4 +251,4 @@ The largest relative wins are on compound shapes — exactly where the legacy in
 - **`BinaryPredicate.signed`.** Captured at compile time and baked into the chosen comparator; never re-checked per row.
 - **`BooleanPredicate` with non-`EQ`/`NOT_EQ` operators.** The legacy evaluator returns `true` for any non-null boolean in this case; the compiled boolean leaves preserve this fallback in their `default` switch arm.
 - **Empty `And`/`Or`.** Already rejected at `ResolvedPredicate` construction; the test suite covers it.
-- **Indexed cast safety.** Only `FlatRowReader.create` invokes the 3-arg compile overload, and `FlatRowReader` implements `IndexedAccessor`. The cast is a contract between the compiler and the readers that opt into it.
+- **Indexed cast safety.** Only `FlatRowReader.create` and `NestedRowReader.create` invoke the 3-arg compile overload, and both implement [RowReader]. The cast `(RowReader) row` is a contract between the compiler and the readers that opt into it.

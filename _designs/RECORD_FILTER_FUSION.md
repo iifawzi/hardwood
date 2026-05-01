@@ -4,7 +4,7 @@
 
 ## Context
 
-Stages 1–3 of [RECORD_FILTER_COMPILATION](RECORD_FILTER_COMPILATION.md) eliminated per-row dispatch in two places: the predicate-tree interpreter (replaced by a compiled `RowMatcher` graph) and the name-keyed accessor (replaced by indexed access for flat top-level columns). The remaining cost in compound predicates is the inner virtual call inside the fixed-arity AND/OR matchers:
+Stages 1–3 of [RECORD_FILTER_COMPILATION](RECORD_FILTER_COMPILATION.md) eliminated per-row dispatch in two places: the predicate-tree interpreter (replaced by a compiled `RowMatcher` graph) and the name-keyed accessor (replaced by indexed access via [RowReader]'s `getXxx(int)` accessors for top-level columns). The remaining cost in compound predicates is the inner virtual call inside the fixed-arity AND/OR matchers:
 
 ```java
 private static final class And2Matcher implements RowMatcher {
@@ -53,7 +53,7 @@ Both `And` and `Or` are commutative for pure-leaf children, so both orderings di
 
 Every combination above is implemented for:
 - both `And` and `Or`,
-- both name-keyed access (`StructAccessor.getX(name)`) and indexed access (`IndexedAccessor.getXAt(int)`).
+- both name-keyed access (`StructAccessor.getX(name)`) and indexed access (`RowReader.getX(int)`).
 
 For each fusion target the code emits a distinct concrete class per `(opA, opB)` pair (6 × 6 = 36 per target). Each leaf operator is `EQ`, `NOT_EQ`, `LT`, `LT_EQ`, `GT`, `GT_EQ`. Boolean leaves with operators outside `EQ`/`NOT_EQ` reduce to the legacy non-null check, matching `RecordFilterEvaluator.matchesRow`.
 
@@ -83,16 +83,16 @@ Cross-type combinations (`int + long`, `int + double`, `long + double`) canonica
 
 ### New file: `internal/predicate/RecordFilterFusionIndexed.java`
 
-Mirrors `RecordFilterFusion` but uses `IndexedAccessor.getXAt(int)` rather than `StructAccessor.getX(name)`. Public API:
+Mirrors `RecordFilterFusion` but uses `RowReader.getX(int)` rather than `StructAccessor.getX(name)`. Public API:
 
 ```java
 static RowMatcher tryFuseAnd2(ResolvedPredicate a, ResolvedPredicate b,
-        FileSchema schema, ProjectedSchema projection);
+        FileSchema schema, IntUnaryOperator topLevelFieldIndex);
 static RowMatcher tryFuseOr2(ResolvedPredicate a, ResolvedPredicate b,
-        FileSchema schema, ProjectedSchema projection);
+        FileSchema schema, IntUnaryOperator topLevelFieldIndex);
 ```
 
-Returns `null` if either leaf is non-top-level (path length > 1) or the pair is not eligible. Top-level column indices are translated to projected indices at compile time.
+Returns `null` if either leaf is non-top-level (path length > 1), if `topLevelFieldIndex` returns `-1` for either column, or if the pair is not otherwise eligible. The callback maps each file leaf-column index to the reader field index expected by [RowReader]'s indexed accessors — supplied by `FlatRowReader` and `NestedRowReader` at compile time.
 
 ### Modify `internal/predicate/RecordFilterCompiler.java`
 
@@ -100,18 +100,18 @@ Returns `null` if either leaf is non-top-level (path length > 1) or the pair is 
 
 ```java
 private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
-        ProjectedSchema projection) {
+        IntUnaryOperator topLevelFieldIndex) {
     if (FUSION_ENABLED && children.size() == 2) {
-        if (projection != null) {
-            RowMatcher fused = RecordFilterFusionIndexed.tryFuseAnd2(
-                    children.get(0), children.get(1), schema, projection);
+        ResolvedPredicate a = children.get(0);
+        ResolvedPredicate b = children.get(1);
+        if (topLevelFieldIndex != null) {
+            RowMatcher fused = RecordFilterFusionIndexed.tryFuseAnd2(a, b, schema, topLevelFieldIndex);
             if (fused != null) return fused;
         }
-        RowMatcher fused = RecordFilterFusion.tryFuseAnd2(
-                children.get(0), children.get(1), schema);
+        RowMatcher fused = RecordFilterFusion.tryFuseAnd2(a, b, schema);
         if (fused != null) return fused;
     }
-    RowMatcher[] compiled = compileAll(children, schema, projection);
+    RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
     return switch (compiled.length) { /* unchanged */ };
 }
 ```
@@ -134,8 +134,8 @@ For this reason, every operator pair within every type combination is hand-writt
 
 Fused matchers preserve `RecordFilterEvaluator.matchesRow` semantics exactly:
 
-- A leaf whose intermediate struct path is null returns false. The fused body checks `resolve(row, path) == null` before any value access (name-keyed) or relies on `IndexedAccessor`'s flat top-level guarantee that the row reference itself is non-null (indexed).
-- A leaf whose direct field is null returns false. Fused bodies check `accessor.isNull(name)` / `isNullAt(index)` before reading the primitive.
+- A leaf whose intermediate struct path is null returns false. The fused body checks `resolve(row, path) == null` before any value access (name-keyed); the indexed path is gated to top-level columns, so the row reference itself is the relevant non-null target.
+- A leaf whose direct field is null returns false. Fused bodies check `accessor.isNull(name)` (name-keyed) or `row.isNull(index)` on [RowReader] (indexed) before reading the primitive.
 - AND fusion short-circuits on the first false — the body uses `&&` between the two leaves.
 - OR fusion short-circuits on the first true — the body uses `||`. When leaf A is null/false, leaf B is still evaluated.
 - Float and double comparisons use `Float.compare` / `Double.compare`, matching the legacy NaN ordering used by the per-leaf factories in `RecordFilterCompiler`.
@@ -149,7 +149,7 @@ Fused matchers preserve `RecordFilterEvaluator.matchesRow` semantics exactly:
 
 Three-way equivalence check. For every fused (combo × connective × opA × opB × same-column / different-column × null / non-null leaf value) tuple:
 
-1. Build a stub row implementing `StructAccessor` (and `IndexedAccessor` where applicable).
+1. Build a stub row implementing [RowReader] (which extends `StructAccessor` and adds the indexed accessors).
 2. Compile the predicate three ways:
     - Through `RecordFilterCompiler.compile` with fusion enabled (the fused matcher).
     - Through `RecordFilterCompiler.compile` with `-Dhardwood.recordfilter.fusion=false` (the generic `And2Matcher` / `Or2Matcher` over name-keyed leaves).
@@ -212,7 +212,7 @@ The harness runs all shapes under each mode (separate JVM invocations recommende
 
 ## Risks and Edge Cases
 
-- **Cast safety in indexed fusion.** Indexed leaves cast the row to `IndexedAccessor`. The cast is safe by construction — `RecordFilterFusionIndexed.tryFuseAnd2` / `tryFuseOr2` is reached only via the projection-aware `RecordFilterCompiler.compile` overload, which is only invoked from `FlatRowReader` (which `implements IndexedAccessor`). Same contract as the indexed leaves introduced in Stage 2.
+- **Cast safety in indexed fusion.** Indexed leaves cast the row to [RowReader]. The cast is safe by construction — `RecordFilterFusionIndexed.tryFuseAnd2` / `tryFuseOr2` is reached only via the 3-arg `RecordFilterCompiler.compile` overload, which is only invoked from `FlatRowReader` and `NestedRowReader` (both implement [RowReader]). Same contract as the indexed leaves introduced in Stage 2.
 - **Canonicalisation correctness.** Cross-type AND/OR canonicalisation relies on commutativity. Both `And` and `Or` are commutative regardless of leaf order or null-yielding leaves; the legacy evaluator uses the same commutative semantics via short-circuit on first match/miss. Three-way equivalence tests cover both orderings.
 - **Same-column fusion of intermediate struct paths.** Fusion is allowed for same-column same-type when both leaves resolve identical intermediate struct paths. Different paths (e.g. `outer.x` and `inner.x`) compare by `columnIndex`, which is unique per leaf in the file schema, so the same-column branch only fires when the actual physical column matches.
 - **Outer-site megamorphism.** Stage 4 does not eliminate megamorphism at `FilteredRowReader.hasNext`'s `matcher.test(row)` site. The cost is bounded — one inline-cache miss per row instead of three — and is largely hidden for long single-query scans by C2's speculative inlining. Workloads that rapidly interleave many short queries pay more. See _Future work_ below.
