@@ -121,9 +121,7 @@
       "Bash(gh label *)",
       "Bash(git tag *)",
       "Bash(git apply *)",
-      "Bash(gh run *)",
-      "Bash(/usr/libexec/java_home *)",
-      "Bash(git worktree *)"
+      "Bash(gh run *)"
     ]
   }
 }
