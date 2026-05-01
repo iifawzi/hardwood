@@ -9,12 +9,12 @@ package dev.hardwood.internal.predicate;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.IntUnaryOperator;
 
-import dev.hardwood.internal.reader.IndexedAccessor;
 import dev.hardwood.reader.FilterPredicate.Operator;
+import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.StructAccessor;
 import dev.hardwood.schema.FileSchema;
-import dev.hardwood.schema.ProjectedSchema;
 
 /// Compiles a [ResolvedPredicate] into a [RowMatcher] tree once per reader.
 ///
@@ -34,31 +34,56 @@ public final class RecordFilterCompiler {
         return compile(predicate, schema, null);
     }
 
-    /// Indexed-access overload: when the row reader guarantees the row will
-    /// implement [IndexedAccessor] (i.e. it is a
-    /// [dev.hardwood.internal.reader.FlatRowReader]), pass its projection
-    /// here. The compiler then translates each top-level leaf's column
-    /// index to the projected field index at compile time and emits
-    /// indexed leaves that bypass the name → index hash lookup. Nested
-    /// paths (path length > 1) still use the name-keyed leaves regardless,
-    /// since indexed access is only valid for flat top-level columns.
-    public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema, ProjectedSchema projection) {
+    /// Indexed-access overload: when the row reader is known to be a
+    /// [RowReader] whose `getXxx(int)` accessors can address top-level
+    /// fields directly, pass a `topLevelFieldIndex` callback that maps a
+    /// **file leaf-column index** to the **field index** the reader's
+    /// indexed accessors expect. The function should return `-1` for
+    /// columns that aren't directly addressable that way (e.g. not in the
+    /// projection); the compiler then falls back to the name-keyed leaf.
+    ///
+    /// The semantic of the returned index differs by reader:
+    /// - [dev.hardwood.internal.reader.FlatRowReader]: projected leaf-column
+    ///   index (since for flat schemas every leaf is a top-level field).
+    /// - [dev.hardwood.internal.reader.NestedRowReader]: projected
+    ///   top-level field index in the row reader's projected fields.
+    ///
+    /// Nested paths (path length > 1) always use the name-keyed leaves
+    /// regardless, since indexed access is only meaningful for top-level
+    /// columns.
+    public static RowMatcher compile(ResolvedPredicate predicate, FileSchema schema,
+            IntUnaryOperator topLevelFieldIndex) {
         return switch (predicate) {
-            case ResolvedPredicate.IntPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedIntLeaf(projection.toProjectedIndex(p.columnIndex()), p.op(), p.value())
-                    : intLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
-            case ResolvedPredicate.LongPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedLongLeaf(projection.toProjectedIndex(p.columnIndex()), p.op(), p.value())
-                    : longLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
-            case ResolvedPredicate.FloatPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedFloatLeaf(projection.toProjectedIndex(p.columnIndex()), p.op(), p.value())
-                    : floatLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
-            case ResolvedPredicate.DoublePredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedDoubleLeaf(projection.toProjectedIndex(p.columnIndex()), p.op(), p.value())
-                    : doubleLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
-            case ResolvedPredicate.BooleanPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedBooleanLeaf(projection.toProjectedIndex(p.columnIndex()), p.op(), p.value())
-                    : booleanLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            case ResolvedPredicate.IntPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedIntLeaf(idx, p.op(), p.value())
+                        : intLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            }
+            case ResolvedPredicate.LongPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedLongLeaf(idx, p.op(), p.value())
+                        : longLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            }
+            case ResolvedPredicate.FloatPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedFloatLeaf(idx, p.op(), p.value())
+                        : floatLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            }
+            case ResolvedPredicate.DoublePredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedDoubleLeaf(idx, p.op(), p.value())
+                        : doubleLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            }
+            case ResolvedPredicate.BooleanPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedBooleanLeaf(idx, p.op(), p.value())
+                        : booleanLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.op(), p.value());
+            }
             case ResolvedPredicate.BinaryPredicate p ->
                     binaryLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()),
                             p.op(), p.value(), p.signed());
@@ -68,26 +93,43 @@ public final class RecordFilterCompiler {
                     longInLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.values());
             case ResolvedPredicate.BinaryInPredicate p ->
                     binaryInLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()), p.values());
-            case ResolvedPredicate.IsNullPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedIsNullLeaf(projection.toProjectedIndex(p.columnIndex()))
-                    : isNullLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()));
-            case ResolvedPredicate.IsNotNullPredicate p -> projection != null && isTopLevel(schema, p.columnIndex())
-                    ? indexedIsNotNullLeaf(projection.toProjectedIndex(p.columnIndex()))
-                    : isNotNullLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()));
-            case ResolvedPredicate.And and -> compileAnd(and.children(), schema, projection);
-            case ResolvedPredicate.Or or -> compileOr(or.children(), schema, projection);
+            case ResolvedPredicate.IsNullPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedIsNullLeaf(idx)
+                        : isNullLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()));
+            }
+            case ResolvedPredicate.IsNotNullPredicate p -> {
+                int idx = indexedTopLevel(schema, p.columnIndex(), topLevelFieldIndex);
+                yield idx >= 0
+                        ? indexedIsNotNullLeaf(idx)
+                        : isNotNullLeaf(pathSegments(schema, p.columnIndex()), leafName(schema, p.columnIndex()));
+            }
+            case ResolvedPredicate.And and -> compileAnd(and.children(), schema, topLevelFieldIndex);
+            case ResolvedPredicate.Or or -> compileOr(or.children(), schema, topLevelFieldIndex);
         };
     }
 
-    private static boolean isTopLevel(FileSchema schema, int columnIndex) {
-        return schema.getColumn(columnIndex).fieldPath().elements().size() <= 1;
+    /// Returns the reader field index for a top-level column, or `-1` when
+    /// the leaf cannot use indexed access — either because it isn't
+    /// top-level (path length > 1), no callback was supplied, or the
+    /// callback declines to map this column.
+    private static int indexedTopLevel(FileSchema schema, int columnIndex,
+            IntUnaryOperator topLevelFieldIndex) {
+        if (topLevelFieldIndex == null) {
+            return -1;
+        }
+        if (schema.getColumn(columnIndex).fieldPath().elements().size() > 1) {
+            return -1;
+        }
+        return topLevelFieldIndex.applyAsInt(columnIndex);
     }
 
     // ==================== Compounds ====================
 
     private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
-            ProjectedSchema projection) {
-        RowMatcher[] compiled = compileAll(children, schema, projection);
+            IntUnaryOperator topLevelFieldIndex) {
+        RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         if (compiled.length == 1) {
             return compiled[0];
         }
@@ -95,8 +137,8 @@ public final class RecordFilterCompiler {
     }
 
     private static RowMatcher compileOr(List<ResolvedPredicate> children, FileSchema schema,
-            ProjectedSchema projection) {
-        RowMatcher[] compiled = compileAll(children, schema, projection);
+            IntUnaryOperator topLevelFieldIndex) {
+        RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         if (compiled.length == 1) {
             return compiled[0];
         }
@@ -136,10 +178,10 @@ public final class RecordFilterCompiler {
     }
 
     private static RowMatcher[] compileAll(List<ResolvedPredicate> children, FileSchema schema,
-            ProjectedSchema projection) {
+            IntUnaryOperator topLevelFieldIndex) {
         RowMatcher[] out = new RowMatcher[children.size()];
         for (int i = 0; i < out.length; i++) {
-            out[i] = compile(children.get(i), schema, projection);
+            out[i] = compile(children.get(i), schema, topLevelFieldIndex);
         }
         return out;
     }
@@ -322,71 +364,72 @@ public final class RecordFilterCompiler {
 
     // ==================== Indexed leaf factories ====================
     //
-    // Used when the row reader implements [IndexedAccessor] (i.e. it is a
-    // [dev.hardwood.internal.reader.FlatRowReader]) and the leaf operates
-    // on a top-level column. The cast is safe by construction — only the
-    // projection-aware compile entry point routes here, and that entry
-    // point is invoked solely from readers that guarantee the row implements
-    // [IndexedAccessor].
+    // Used when the row is known to be a [RowReader] and the leaf operates
+    // on a top-level column. The cast is safe by construction — only
+    // [dev.hardwood.internal.reader.FilteredRowReader] invokes the matcher,
+    // and it always passes a [RowReader] delegate. The compiler emits these
+    // leaves only when the caller passes a `topLevelFieldIndex` callback,
+    // which today is done by both [dev.hardwood.internal.reader.FlatRowReader]
+    // and [dev.hardwood.internal.reader.NestedRowReader].
 
     private static RowMatcher indexedIntLeaf(int idx, Operator op, int v) {
         return switch (op) {
-            case EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) == v; };
-            case NOT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) != v; };
-            case LT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) < v; };
-            case LT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) <= v; };
-            case GT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) > v; };
-            case GT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getIntAt(idx) >= v; };
+            case EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) == v; };
+            case NOT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) != v; };
+            case LT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) < v; };
+            case LT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) <= v; };
+            case GT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) > v; };
+            case GT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getInt(idx) >= v; };
         };
     }
 
     private static RowMatcher indexedLongLeaf(int idx, Operator op, long v) {
         return switch (op) {
-            case EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) == v; };
-            case NOT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) != v; };
-            case LT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) < v; };
-            case LT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) <= v; };
-            case GT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) > v; };
-            case GT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getLongAt(idx) >= v; };
+            case EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) == v; };
+            case NOT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) != v; };
+            case LT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) < v; };
+            case LT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) <= v; };
+            case GT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) > v; };
+            case GT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getLong(idx) >= v; };
         };
     }
 
     private static RowMatcher indexedFloatLeaf(int idx, Operator op, float v) {
         return switch (op) {
-            case EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) == 0; };
-            case NOT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) != 0; };
-            case LT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) < 0; };
-            case LT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) <= 0; };
-            case GT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) > 0; };
-            case GT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Float.compare(a.getFloatAt(idx), v) >= 0; };
+            case EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) == 0; };
+            case NOT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) != 0; };
+            case LT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) < 0; };
+            case LT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) <= 0; };
+            case GT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) > 0; };
+            case GT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Float.compare(r.getFloat(idx), v) >= 0; };
         };
     }
 
     private static RowMatcher indexedDoubleLeaf(int idx, Operator op, double v) {
         return switch (op) {
-            case EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) == 0; };
-            case NOT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) != 0; };
-            case LT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) < 0; };
-            case LT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) <= 0; };
-            case GT -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) > 0; };
-            case GT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && Double.compare(a.getDoubleAt(idx), v) >= 0; };
+            case EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) == 0; };
+            case NOT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) != 0; };
+            case LT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) < 0; };
+            case LT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) <= 0; };
+            case GT -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) > 0; };
+            case GT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && Double.compare(r.getDouble(idx), v) >= 0; };
         };
     }
 
     private static RowMatcher indexedBooleanLeaf(int idx, Operator op, boolean v) {
         return switch (op) {
-            case EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getBooleanAt(idx) == v; };
-            case NOT_EQ -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx) && a.getBooleanAt(idx) != v; };
-            default -> row -> { IndexedAccessor a = (IndexedAccessor) row; return !a.isNullAt(idx); };
+            case EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getBoolean(idx) == v; };
+            case NOT_EQ -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx) && r.getBoolean(idx) != v; };
+            default -> row -> { RowReader r = (RowReader) row; return !r.isNull(idx); };
         };
     }
 
     private static RowMatcher indexedIsNullLeaf(int idx) {
-        return row -> ((IndexedAccessor) row).isNullAt(idx);
+        return row -> ((RowReader) row).isNull(idx);
     }
 
     private static RowMatcher indexedIsNotNullLeaf(int idx) {
-        return row -> !((IndexedAccessor) row).isNullAt(idx);
+        return row -> !((RowReader) row).isNull(idx);
     }
 
     // ==================== Path resolution ====================

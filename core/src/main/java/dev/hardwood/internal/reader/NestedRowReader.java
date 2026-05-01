@@ -11,11 +11,14 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 
 import dev.hardwood.internal.predicate.RecordFilterCompiler;
 import dev.hardwood.internal.predicate.ResolvedPredicate;
 import dev.hardwood.internal.predicate.RowMatcher;
+import dev.hardwood.metadata.FieldPath;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.PqDoubleList;
@@ -29,6 +32,7 @@ import dev.hardwood.row.PqVariant;
 import dev.hardwood.schema.ColumnSchema;
 import dev.hardwood.schema.FileSchema;
 import dev.hardwood.schema.ProjectedSchema;
+import dev.hardwood.schema.SchemaNode;
 
 /// Row reader for nested schemas using the v3 pipeline.
 ///
@@ -136,10 +140,56 @@ public final class NestedRowReader implements RowReader {
         NestedRowReader reader = new NestedRowReader(buffers, workers, schema, projectedSchema);
         reader.initialize();
         if (filter != null) {
-            RowMatcher matcher = RecordFilterCompiler.compile(filter, schema);
+            // Indexed compile path: for nested schemas, the reader's
+            // `getInt(int)` etc. take a *projected top-level field index*
+            // rather than a leaf-column index, so we precompute the mapping
+            // from each file leaf-column to its projected top-level field
+            // (or `-1` for nested-leaf columns and unprojected fields).
+            int[] topLevelLookup = buildTopLevelFieldIndexLookup(schema, projectedSchema);
+            RowMatcher matcher = RecordFilterCompiler.compile(filter, schema, col -> topLevelLookup[col]);
             return new FilteredRowReader(reader, matcher);
         }
         return reader;
+    }
+
+    /// Builds a `fileLeafColumnIndex → projectedTopLevelFieldIndex` lookup.
+    /// Returns `-1` for any column whose path is not a single top-level
+    /// element, or whose top-level field is not in the projection.
+    ///
+    /// The projected top-level field index matches the index space used by
+    /// [NestedBatchDataView]'s indexed accessors (i.e. `getInt(int)`).
+    private static int[] buildTopLevelFieldIndexLookup(FileSchema schema, ProjectedSchema projectedSchema) {
+        int columnCount = schema.getColumnCount();
+        int[] lookup = new int[columnCount];
+        Arrays.fill(lookup, -1);
+
+        int[] projectedFieldIndices = projectedSchema.getProjectedFieldIndices();
+        List<SchemaNode> children = schema.getRootNode().children();
+
+        for (int col = 0; col < columnCount; col++) {
+            FieldPath path = schema.getColumn(col).fieldPath();
+            if (path.elements().size() != 1) {
+                continue;
+            }
+            String topLevelName = path.topLevelName();
+            int origTopLevelIdx = -1;
+            for (int i = 0; i < children.size(); i++) {
+                if (children.get(i).name().equals(topLevelName)) {
+                    origTopLevelIdx = i;
+                    break;
+                }
+            }
+            if (origTopLevelIdx < 0) {
+                continue;
+            }
+            for (int i = 0; i < projectedFieldIndices.length; i++) {
+                if (projectedFieldIndices[i] == origTopLevelIdx) {
+                    lookup[col] = i;
+                    break;
+                }
+            }
+        }
+        return lookup;
     }
 
     // ==================== Iteration ====================

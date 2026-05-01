@@ -20,11 +20,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import dev.hardwood.internal.reader.IndexedAccessor;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.metadata.RepetitionType;
 import dev.hardwood.metadata.SchemaElement;
 import dev.hardwood.reader.FilterPredicate.Operator;
+import dev.hardwood.reader.RowReader;
 import dev.hardwood.row.PqDoubleList;
 import dev.hardwood.row.PqIntList;
 import dev.hardwood.row.PqInterval;
@@ -33,7 +33,6 @@ import dev.hardwood.row.PqLongList;
 import dev.hardwood.row.PqMap;
 import dev.hardwood.row.PqStruct;
 import dev.hardwood.row.PqVariant;
-import dev.hardwood.row.StructAccessor;
 import dev.hardwood.schema.ColumnProjection;
 import dev.hardwood.schema.FileSchema;
 import dev.hardwood.schema.ProjectedSchema;
@@ -41,14 +40,13 @@ import dev.hardwood.schema.ProjectedSchema;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Equivalence tests for the indexed compile path. For every predicate
-/// shape the indexed matcher (built via
-/// `RecordFilterCompiler.compile(predicate, schema, projection)`) must
-/// agree with the name-based matcher and with the legacy
-/// [RecordFilterEvaluator] oracle.
+/// shape the indexed matcher (built via the projection-aware
+/// `RecordFilterCompiler.compile` overload) must agree with the
+/// name-based matcher and with the legacy [RecordFilterEvaluator] oracle.
 ///
-/// Rows here implement both [StructAccessor] (for name-based access) and
-/// [IndexedAccessor] (for the projected-index path) so the same row can
-/// flow through both matchers.
+/// Rows here implement [RowReader], so they support both the name-based
+/// accessors (inherited from [StructAccessor]) and the indexed accessors
+/// (`getInt(int)`, `isNull(int)`, …) the compiled-indexed path uses.
 class RecordFilterIndexedTest {
 
     // ==================== Single leaves ====================
@@ -154,11 +152,11 @@ class RecordFilterIndexedTest {
 
     // ==================== Helpers ====================
 
-    private static void assertEquivalent(ResolvedPredicate predicate, StructAccessor row, FileSchema schema,
+    private static void assertEquivalent(ResolvedPredicate predicate, RowReader row, FileSchema schema,
             ProjectedSchema projection, boolean expected) {
         boolean legacy = RecordFilterEvaluator.matchesRow(predicate, row, schema);
         boolean compiledName = RecordFilterCompiler.compile(predicate, schema).test(row);
-        boolean compiledIndexed = RecordFilterCompiler.compile(predicate, schema, projection).test(row);
+        boolean compiledIndexed = RecordFilterCompiler.compile(predicate, schema, projection::toProjectedIndex).test(row);
         assertThat(compiledName).as("legacy/compiled-name disagreed for %s", predicate).isEqualTo(legacy);
         assertThat(compiledIndexed).as("legacy/compiled-indexed disagreed for %s", predicate).isEqualTo(legacy);
         assertThat(legacy).as("legacy oracle disagreed with expected for %s", predicate).isEqualTo(expected);
@@ -218,8 +216,8 @@ class RecordFilterIndexedTest {
             this.v0 = v0;
             this.v1 = v1;
         }
-        @Override public long getLong(String name) { return getLongAt(indexOf(name)); }
-        @Override public long getLongAt(int idx) { return idx == 0 ? v0 : v1; }
+        @Override public long getLong(String name) { return getLong(indexOf(name)); }
+        @Override public long getLong(int idx) { return idx == 0 ? v0 : v1; }
     }
 
     private static final class TwoIntIndexedRow extends BaseIndexedRow {
@@ -230,8 +228,8 @@ class RecordFilterIndexedTest {
             this.v0 = v0;
             this.v1 = v1;
         }
-        @Override public int getInt(String name) { return getIntAt(indexOf(name)); }
-        @Override public int getIntAt(int idx) { return idx == 0 ? v0 : v1; }
+        @Override public int getInt(String name) { return getInt(indexOf(name)); }
+        @Override public int getInt(int idx) { return idx == 0 ? v0 : v1; }
     }
 
     private static final class TwoDoubleIndexedRow extends BaseIndexedRow {
@@ -242,8 +240,8 @@ class RecordFilterIndexedTest {
             this.v0 = v0;
             this.v1 = v1;
         }
-        @Override public double getDouble(String name) { return getDoubleAt(indexOf(name)); }
-        @Override public double getDoubleAt(int idx) { return idx == 0 ? v0 : v1; }
+        @Override public double getDouble(String name) { return getDouble(indexOf(name)); }
+        @Override public double getDouble(int idx) { return idx == 0 ? v0 : v1; }
     }
 
     private static final class ThreeLongIndexedRow extends BaseIndexedRow {
@@ -256,8 +254,8 @@ class RecordFilterIndexedTest {
             this.v1 = v1;
             this.v2 = v2;
         }
-        @Override public long getLong(String name) { return getLongAt(indexOf(name)); }
-        @Override public long getLongAt(int idx) {
+        @Override public long getLong(String name) { return getLong(indexOf(name)); }
+        @Override public long getLong(int idx) {
             return switch (idx) {
                 case 0 -> v0;
                 case 1 -> v1;
@@ -267,11 +265,11 @@ class RecordFilterIndexedTest {
         }
     }
 
-    /// Common stub plumbing for both `StructAccessor` and `IndexedAccessor`.
-    /// Subclasses override only the typed accessors they need; everything else
-    /// throws `UnsupportedOperationException`, which makes test failures point
-    /// at the predicate path that called the wrong accessor.
-    private abstract static class BaseIndexedRow implements StructAccessor, IndexedAccessor {
+    /// Common stub plumbing implementing [RowReader]. Subclasses override
+    /// only the typed accessors they need; everything else throws
+    /// `UnsupportedOperationException`, which makes test failures point at
+    /// the predicate path that called the wrong accessor.
+    private abstract static class BaseIndexedRow implements RowReader {
         private final String[] names;
         private final boolean[] nulls;
 
@@ -288,7 +286,11 @@ class RecordFilterIndexedTest {
         }
 
         @Override public boolean isNull(String name) { return nulls[indexOf(name)]; }
-        @Override public boolean isNullAt(int idx) { return nulls[idx]; }
+        @Override public boolean isNull(int idx) { return nulls[idx]; }
+
+        @Override public boolean hasNext() { throw new UnsupportedOperationException(); }
+        @Override public void next() { throw new UnsupportedOperationException(); }
+        @Override public void close() { }
 
         @Override public int getInt(String name) { throw new UnsupportedOperationException(name); }
         @Override public long getLong(String name) { throw new UnsupportedOperationException(name); }
@@ -314,11 +316,25 @@ class RecordFilterIndexedTest {
         @Override public int getFieldCount() { return names.length; }
         @Override public String getFieldName(int index) { return names[index]; }
 
-        @Override public int getIntAt(int idx) { throw new UnsupportedOperationException(); }
-        @Override public long getLongAt(int idx) { throw new UnsupportedOperationException(); }
-        @Override public float getFloatAt(int idx) { throw new UnsupportedOperationException(); }
-        @Override public double getDoubleAt(int idx) { throw new UnsupportedOperationException(); }
-        @Override public boolean getBooleanAt(int idx) { throw new UnsupportedOperationException(); }
-        @Override public byte[] getBinaryAt(int idx) { throw new UnsupportedOperationException(); }
+        @Override public int getInt(int idx) { throw new UnsupportedOperationException(); }
+        @Override public long getLong(int idx) { throw new UnsupportedOperationException(); }
+        @Override public float getFloat(int idx) { throw new UnsupportedOperationException(); }
+        @Override public double getDouble(int idx) { throw new UnsupportedOperationException(); }
+        @Override public boolean getBoolean(int idx) { throw new UnsupportedOperationException(); }
+        @Override public String getString(int idx) { throw new UnsupportedOperationException(); }
+        @Override public byte[] getBinary(int idx) { throw new UnsupportedOperationException(); }
+        @Override public LocalDate getDate(int idx) { throw new UnsupportedOperationException(); }
+        @Override public LocalTime getTime(int idx) { throw new UnsupportedOperationException(); }
+        @Override public Instant getTimestamp(int idx) { throw new UnsupportedOperationException(); }
+        @Override public BigDecimal getDecimal(int idx) { throw new UnsupportedOperationException(); }
+        @Override public UUID getUuid(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqInterval getInterval(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqStruct getStruct(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqIntList getListOfInts(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqLongList getListOfLongs(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqDoubleList getListOfDoubles(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqList getList(int idx) { throw new UnsupportedOperationException(); }
+        @Override public PqMap getMap(int idx) { throw new UnsupportedOperationException(); }
+        @Override public Object getValue(int idx) { throw new UnsupportedOperationException(); }
     }
 }
