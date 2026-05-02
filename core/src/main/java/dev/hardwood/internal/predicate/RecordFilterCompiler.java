@@ -27,6 +27,14 @@ public final class RecordFilterCompiler {
     static final String[] EMPTY_PATH = new String[0];
     private static final int IN_LIST_BINARY_SEARCH_THRESHOLD = 16;
 
+    /// Compile-time fusion of arity-2 AND/OR leaves into per-query synthetic
+    /// classes via runtime bytecode generation. Default true; set
+    /// `-Dhardwood.recordfilter.fusion=false` to route through the fixed-arity
+    /// [And2Matcher] / [Or2Matcher] for benchmark A/B comparison. Read once
+    /// at class init.
+    static final boolean FUSION_ENABLED =
+            !"false".equalsIgnoreCase(System.getProperty("hardwood.recordfilter.fusion"));
+
     private RecordFilterCompiler() {
     }
 
@@ -132,6 +140,20 @@ public final class RecordFilterCompiler {
 
     private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
+        if (FUSION_ENABLED && children.size() == 2) {
+            ResolvedPredicate a = children.get(0);
+            ResolvedPredicate b = children.get(1);
+            if (topLevelFieldIndex != null) {
+                RowMatcher fused = RecordFilterFusionBC.tryFuseAnd2Indexed(a, b, schema, topLevelFieldIndex);
+                if (fused != null) {
+                    return fused;
+                }
+            }
+            RowMatcher fused = RecordFilterFusionBC.tryFuseAnd2(a, b, schema);
+            if (fused != null) {
+                return fused;
+            }
+        }
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         return switch (compiled.length) {
             case 1 -> compiled[0];
@@ -144,6 +166,20 @@ public final class RecordFilterCompiler {
 
     private static RowMatcher compileOr(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
+        if (FUSION_ENABLED && children.size() == 2) {
+            ResolvedPredicate a = children.get(0);
+            ResolvedPredicate b = children.get(1);
+            if (topLevelFieldIndex != null) {
+                RowMatcher fused = RecordFilterFusionBC.tryFuseOr2Indexed(a, b, schema, topLevelFieldIndex);
+                if (fused != null) {
+                    return fused;
+                }
+            }
+            RowMatcher fused = RecordFilterFusionBC.tryFuseOr2(a, b, schema);
+            if (fused != null) {
+                return fused;
+            }
+        }
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         return switch (compiled.length) {
             case 1 -> compiled[0];

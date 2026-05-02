@@ -95,6 +95,11 @@
       <artifactId>brotli4j</artifactId>
       <optional>true</optional>
     </dependency>
+    <!-- Runtime bytecode generation for record-filter fusion -->
+    <dependency>
+      <groupId>org.ow2.asm</groupId>
+      <artifactId>asm</artifactId>
+    </dependency>
   </dependencies>
 
   <build>
