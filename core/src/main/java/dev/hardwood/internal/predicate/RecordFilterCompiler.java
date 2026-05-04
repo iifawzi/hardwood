@@ -27,6 +27,14 @@ public final class RecordFilterCompiler {
     static final String[] EMPTY_PATH = new String[0];
     private static final int IN_LIST_BINARY_SEARCH_THRESHOLD = 16;
 
+    /// Compile-time fusion of arity-2 AND/OR leaves into per-tuple synthetic
+    /// classes generated at build time. Default true; set
+    /// `-Dhardwood.recordfilter.fusion=false` to route through the fixed-arity
+    /// [And2Matcher] / [Or2Matcher] for benchmark A/B comparison. Read once at
+    /// class init.
+    static final boolean FUSION_ENABLED =
+            !"false".equalsIgnoreCase(System.getProperty("hardwood.recordfilter.fusion"));
+
     private RecordFilterCompiler() {
     }
 
@@ -132,6 +140,13 @@ public final class RecordFilterCompiler {
 
     private static RowMatcher compileAnd(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
+        if (FUSION_ENABLED && children.size() == 2) {
+            RowMatcher fused = FusionDispatcher.fuse(children.get(0), children.get(1),
+                    schema, topLevelFieldIndex, /* isAnd */ true);
+            if (fused != null) {
+                return fused;
+            }
+        }
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         return switch (compiled.length) {
             case 1 -> compiled[0];
@@ -144,6 +159,13 @@ public final class RecordFilterCompiler {
 
     private static RowMatcher compileOr(List<ResolvedPredicate> children, FileSchema schema,
             IntUnaryOperator topLevelFieldIndex) {
+        if (FUSION_ENABLED && children.size() == 2) {
+            RowMatcher fused = FusionDispatcher.fuse(children.get(0), children.get(1),
+                    schema, topLevelFieldIndex, /* isAnd */ false);
+            if (fused != null) {
+                return fused;
+            }
+        }
         RowMatcher[] compiled = compileAll(children, schema, topLevelFieldIndex);
         return switch (compiled.length) {
             case 1 -> compiled[0];
@@ -350,7 +372,7 @@ public final class RecordFilterCompiler {
     }
 
     private static RowMatcher booleanLeaf(String[] path, String name, Operator op, boolean v) {
-        // BooleanPredicate honours only EQ and NOT_EQ; matchesRow returns true for any other op
+        // BooleanPredicate honours only EQ and NOT_EQ; for any other op the leaf returns true
         // when the value is non-null (equivalent to a non-null check).
         return switch (op) {
             case EQ -> row -> { StructAccessor a = resolve(row, path); return a != null && !a.isNull(name) && a.getBoolean(name) == v; };

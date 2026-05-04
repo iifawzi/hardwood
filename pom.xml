@@ -49,6 +49,7 @@
     <module>bom</module>
     <module>test-bom</module>
     <module>test-support</module>
+    <module>core-fusion-codegen</module>
     <module>core</module>
     <module>s3</module>
     <module>aws-auth</module>

@@ -32,10 +32,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Benchmark for record-level filtering overhead.
 ///
-/// Compares RowReader performance across three scenarios:
+/// Compares RowReader performance across:
 /// - No filter (baseline)
 /// - Match-all filter (worst case overhead — every row is evaluated but kept)
 /// - Selective filter (real-world case — most rows are skipped)
+/// - Compound match-all AND on two different columns — falls back to the
+///   generic `And2Matcher` (inner virtual call between leaves)
+/// - Page+record combination
+/// - Same-column fused AND interval — hits `FusedLongAndCsCs_GteLt`, no
+///   inner virtual call between leaves
+/// - Same-column fused OR anti-interval — hits `FusedLongOrCsCs_LtGt`
+///
+/// The fused contenders intentionally pair with the unfused compound
+/// match-all to make A/B comparison straightforward; to force the unfused
+/// path for the same predicate, re-run with
+/// `-Dhardwood.recordfilter.fusion=false`.
 ///
 /// Run:
 ///   ./mvnw test -Pperformance-test -pl performance-testing/end-to-end \
@@ -108,6 +119,27 @@ class RecordFilterBenchmarkTest {
             combinedTimes[i] = System.nanoTime() - start;
         }
 
+        // Fused AND interval on a single long column — hits FusedLongAndCsCs_GteLt.
+        // Pairs with the compound-match-all contender above for A/B against the
+        // unfused And2Matcher path.
+        long[] fusedAndTimes = new long[runs];
+        long[] fusedAndRows = new long[runs];
+        for (int i = 0; i < runs; i++) {
+            long start = System.nanoTime();
+            fusedAndRows[i] = runFusedAndInterval();
+            fusedAndTimes[i] = System.nanoTime() - start;
+        }
+
+        // Fused OR anti-interval on a single long column — hits FusedLongOrCsCs_LtGt.
+        // First leaf is always false so the matcher exercises both branches per row.
+        long[] fusedOrTimes = new long[runs];
+        long[] fusedOrRows = new long[runs];
+        for (int i = 0; i < runs; i++) {
+            long start = System.nanoTime();
+            fusedOrRows[i] = runFusedOrAntiInterval();
+            fusedOrTimes[i] = System.nanoTime() - start;
+        }
+
         // Print results
         System.out.println("\nResults:");
         System.out.printf("  %-45s %10s %15s %12s%n", "Contender", "Time (ms)", "Rows", "Records/sec");
@@ -122,12 +154,18 @@ class RecordFilterBenchmarkTest {
         printResults("Compound match-all (id>=0 AND value<+inf)", compoundTimes, compoundRows, runs);
         System.out.println();
         printResults("Page+record (id range AND value<500)", combinedTimes, combinedRows, runs);
+        System.out.println();
+        printResults("Fused AND interval (id>=0 AND id<+inf)", fusedAndTimes, fusedAndRows, runs);
+        System.out.println();
+        printResults("Fused OR anti-interval (id<0 OR id>-1)", fusedOrTimes, fusedOrRows, runs);
 
         double avgNoFilter = avg(noFilterTimes) / 1_000_000.0;
         double avgMatchAll = avg(matchAllTimes) / 1_000_000.0;
         double avgSelective = avg(selectiveTimes) / 1_000_000.0;
         double avgCompound = avg(compoundTimes) / 1_000_000.0;
         double avgCombined = avg(combinedTimes) / 1_000_000.0;
+        double avgFusedAnd = avg(fusedAndTimes) / 1_000_000.0;
+        double avgFusedOr = avg(fusedOrTimes) / 1_000_000.0;
 
         System.out.printf("%n  Match-all overhead: %.1f%% (%.0f ms → %.0f ms)%n",
                 100.0 * (avgMatchAll - avgNoFilter) / avgNoFilter, avgNoFilter, avgMatchAll);
@@ -137,6 +175,10 @@ class RecordFilterBenchmarkTest {
                 100.0 * (avgCompound - avgNoFilter) / avgNoFilter, avgNoFilter, avgCompound);
         System.out.printf("  Page+record speedup: %.1fx (%.0f ms → %.1f ms)%n",
                 avgNoFilter / avgCombined, avgNoFilter, avgCombined);
+        System.out.printf("  Fused AND vs unfused compound: %.2fx (%.0f ms → %.0f ms)%n",
+                avgCompound / avgFusedAnd, avgCompound, avgFusedAnd);
+        System.out.printf("  Fused OR overhead vs no filter: %.1f%% (%.0f ms → %.0f ms)%n",
+                100.0 * (avgFusedOr - avgNoFilter) / avgNoFilter, avgNoFilter, avgFusedOr);
 
         // Correctness
         assertThat(noFilterRows[0]).isEqualTo(TOTAL_ROWS);
@@ -146,6 +188,8 @@ class RecordFilterBenchmarkTest {
         // Combined: id range narrows to ~100K rows (1% of total), value < 500 keeps roughly half
         // (uniform 0..1000), so we expect somewhere between 30K and 70K matching rows.
         assertThat(combinedRows[0]).isGreaterThan(0L).isLessThan(TOTAL_ROWS / 50L);
+        assertThat(fusedAndRows[0]).isEqualTo(TOTAL_ROWS);
+        assertThat(fusedOrRows[0]).isEqualTo(TOTAL_ROWS);
     }
 
     private long runPageAndRecordFilter() throws Exception {
@@ -160,6 +204,43 @@ class RecordFilterBenchmarkTest {
                 FilterPredicate.gtEq("id", (long) (TOTAL_ROWS - TOTAL_ROWS / 100)),
                 FilterPredicate.lt("id", (long) (TOTAL_ROWS - TOTAL_ROWS / 100) + (TOTAL_ROWS / 100)),
                 FilterPredicate.lt("value", 500.0));
+        long count = 0;
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(BENCHMARK_FILE));
+             RowReader rows = reader.buildRowReader().filter(filter).build()) {
+            while (rows.hasNext()) {
+                rows.next();
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private long runFusedAndInterval() throws Exception {
+        // Same column (`id` long), arity-2 AND with ops (>=, <) on the same
+        // primitive type — eligible for fusion. Both leaves match every row,
+        // so the fused matcher's body runs both comparisons unconditionally.
+        FilterPredicate filter = FilterPredicate.and(
+                FilterPredicate.gtEq("id", 0L),
+                FilterPredicate.lt("id", Long.MAX_VALUE));
+        long count = 0;
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(BENCHMARK_FILE));
+             RowReader rows = reader.buildRowReader().filter(filter).build()) {
+            while (rows.hasNext()) {
+                rows.next();
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private long runFusedOrAntiInterval() throws Exception {
+        // Same column (`id` long), arity-2 OR with ops (<, >) on the same
+        // primitive type — eligible for fusion. The first leaf is always
+        // false (id >= 0), so the matcher always evaluates the second
+        // branch — no short-circuit savings hide dispatch overhead.
+        FilterPredicate filter = FilterPredicate.or(
+                FilterPredicate.lt("id", 0L),
+                FilterPredicate.gt("id", -1L));
         long count = 0;
         try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(BENCHMARK_FILE));
              RowReader rows = reader.buildRowReader().filter(filter).build()) {

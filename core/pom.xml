@@ -43,6 +43,17 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- Build-time annotation processor that generates fused arity-2 RowMatcher
+         classes. `provided` so users of hardwood-core do not see it as a
+         transitive dependency, and javac picks it up via the processor jar's
+         META-INF/services registration. -->
+    <dependency>
+      <groupId>dev.hardwood</groupId>
+      <artifactId>hardwood-core-fusion-codegen</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
     <!-- Test dependencies -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -108,6 +119,16 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <proc>full</proc>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>dev.hardwood</groupId>
+              <artifactId>hardwood-core-fusion-codegen</artifactId>
+              <version>${project.version}</version>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
         <executions>
           <execution>
             <id>compile-java22</id>
@@ -125,6 +146,7 @@
                 <arg>--add-modules</arg>
                 <arg>jdk.incubator.vector</arg>
               </compilerArgs>
+              <proc>none</proc>
             </configuration>
           </execution>
         </executions>

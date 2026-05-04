@@ -59,6 +59,17 @@ import dev.hardwood.schema.FileSchema;
 /// - `or2` — short-circuiting `OR`
 /// - `nested` — `AND(OR(...), ...)`, mixed dispatch
 /// - `intIn5/intIn32` — IN-list with linear search vs binary search
+/// - `and2Fused` — same-column long interval, hits the fused
+///   `FusedLongAndCsCs_GteLt` matcher (no inner virtual call)
+/// - `or2Fused` — same-column long anti-interval, hits the fused
+///   `FusedLongOrCsCs_LtGt` matcher
+/// - `intIn2Fused` — same-column 2-element int IN-list, hits the fused
+///   `FusedIntOrCsCs_EqEq` matcher
+///
+/// The `*Fused` shapes pair naturally with their unfused siblings (`and2`,
+/// `or2`, `intIn5`) for A/B comparison. To force the unfused path on the
+/// fused shapes for a counter-measurement, run with
+/// `-Dhardwood.recordfilter.fusion=false`.
 ///
 /// Run:
 /// ```shell
@@ -77,7 +88,8 @@ public class RecordFilterMicroBenchmark {
 
     static final int BATCH_SIZE = 4096;
 
-    @Param({ "single", "and2", "and3", "and4", "or2", "nested", "intIn5", "intIn32" })
+    @Param({ "single", "and2", "and3", "and4", "or2", "nested", "intIn5", "intIn32",
+            "and2Fused", "or2Fused", "intIn2Fused" })
     public String shape;
 
     private StructAccessor[] rows;
@@ -159,6 +171,18 @@ public class RecordFilterMicroBenchmark {
                     new ResolvedPredicate.IntPredicate(2, Operator.LT, Integer.MAX_VALUE)));
             case "intIn5" -> intIn(2, 5);
             case "intIn32" -> intIn(2, 32);
+            // Same-column / same-type arity-2 compounds — fusable.
+            // Predicate values are picked so every row passes both leaves,
+            // matching the worst-case "evaluate everything" framing of `and2`/`or2`.
+            case "and2Fused" -> new ResolvedPredicate.And(List.of(
+                    new ResolvedPredicate.LongPredicate(0, Operator.GT_EQ, 0L),
+                    new ResolvedPredicate.LongPredicate(0, Operator.LT, Long.MAX_VALUE)));
+            case "or2Fused" -> new ResolvedPredicate.Or(List.of(
+                    new ResolvedPredicate.LongPredicate(0, Operator.LT, Long.MIN_VALUE + 1),
+                    new ResolvedPredicate.LongPredicate(0, Operator.GT, -1L)));
+            case "intIn2Fused" -> new ResolvedPredicate.Or(List.of(
+                    new ResolvedPredicate.IntPredicate(2, Operator.EQ, 0),
+                    new ResolvedPredicate.IntPredicate(2, Operator.EQ, 1)));
             default -> throw new IllegalArgumentException(shape);
         };
     }
