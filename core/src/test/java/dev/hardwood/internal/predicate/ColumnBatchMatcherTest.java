@@ -45,14 +45,16 @@ class ColumnBatchMatcherTest {
         return b;
     }
 
-    private static BitSet toValidity(BitSet nulls, int n) {
+    private static long[] toValidity(BitSet nulls, int n) {
         if (nulls == null) {
             return null;
         }
         BitSet validity = new BitSet(n);
         validity.set(0, n);
         validity.andNot(nulls);
-        return validity;
+        int wordsLen = (n + 63) >>> 6;
+        long[] words = validity.toLongArray();
+        return words.length < wordsLen ? java.util.Arrays.copyOf(words, wordsLen) : words;
     }
 
     private static long[] runMatcher(ColumnBatchMatcher matcher, BatchExchange.Batch batch) {
