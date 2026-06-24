@@ -120,6 +120,57 @@ class RleBitPackingHybridDecoderTest {
         assertThat(output).containsExactly(dict[4], 0.0, dict[1], 0.0);
     }
 
+    @Test
+    void fusedNullAwareDictionaryGatherMatchesReference() {
+        int width = 12; // exercises the 9-16 fast path
+        Random rnd = new Random(2026);
+        int dictSize = 1 << width;
+        double[] dict = new double[dictSize];
+        for (int i = 0; i < dictSize; i++) {
+            dict[i] = rnd.nextDouble() * 500.0 - 250.0;
+        }
+
+        int total = 5000; // > GATHER_BLOCK (1024) to force multiple gather blocks
+        int maxDef = 1;
+        int[] defLevels = new int[total];
+        int nonNull = 0;
+        for (int i = 0; i < total; i++) {
+            defLevels[i] = rnd.nextInt(4) == 0 ? 0 : maxDef; // ~25% null
+            if (defLevels[i] == maxDef) {
+                nonNull++;
+            }
+        }
+        int[] indices = randomValues(rnd, nonNull, width);
+        byte[] encoded = bitPacked(pad8(indices), width);
+
+        double[] output = new double[total];
+        new RleBitPackingHybridDecoder(encoded, width)
+                .readDictionaryDoubles(output, dict, defLevels, maxDef);
+
+        double[] expected = new double[total];
+        int idx = 0;
+        for (int i = 0; i < total; i++) {
+            if (defLevels[i] == maxDef) {
+                expected[i] = dict[indices[idx++]];
+            }
+        }
+        assertThat(output).containsExactly(expected);
+    }
+
+    @Test
+    void fusedNullAwareDictionaryGatherHandlesZeroBitWidth() {
+        // Single-entry dictionary → bitWidth 0, no index bytes to read.
+        double[] dict = {42.5};
+        int maxDef = 1;
+        int[] defLevels = {1, 0, 1, 1, 0};
+
+        double[] output = new double[5];
+        new RleBitPackingHybridDecoder(new byte[0], 0)
+                .readDictionaryDoubles(output, dict, defLevels, maxDef);
+
+        assertThat(output).containsExactly(42.5, 0.0, 42.5, 42.5, 0.0);
+    }
+
     // --- reference encoder (LSB-first, matching the Parquet RLE/bit-packing hybrid) ---
 
     private static int mask(int width) {

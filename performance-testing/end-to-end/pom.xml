@@ -22,6 +22,13 @@
   <name>Hardwood End-to-End Performance Tests</name>
   <description>Performance comparison tests between Hardwood and parquet-java</description>
 
+  <properties>
+    <!-- Extra JVM arguments appended to the test argLine. Empty by default; set on
+         the command line to attach a profiler, e.g.
+         -DprofilerArgs="-agentpath:/path/to/libasyncProfiler.so=start,event=cpu,file=/tmp/flame.html" -->
+    <profilerArgs></profilerArgs>
+  </properties>
+
   <dependencies>
     <!-- Hardwood (module under test) -->
     <dependency>
@@ -142,7 +149,7 @@
          <groupId>org.apache.maven.plugins</groupId>
          <artifactId>maven-surefire-plugin</artifactId>
          <configuration>
-           <argLine>-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -Xmx20g</argLine>
+           <argLine>-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -Xmx20g ${profilerArgs}</argLine>
          </configuration>
        </plugin>
     </plugins>

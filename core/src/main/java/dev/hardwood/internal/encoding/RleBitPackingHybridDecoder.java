@@ -112,8 +112,7 @@ public class RleBitPackingHybridDecoder {
             gatherDictionaryLongs(output, dictionary);
         }
         else {
-            int[] indices = decodeIndices(output.length, defLevels, maxDef);
-            applyDictionary(output, dictionary, indices, defLevels, maxDef);
+            gatherDictionaryLongs(output, dictionary, defLevels, maxDef);
         }
     }
 
@@ -122,8 +121,7 @@ public class RleBitPackingHybridDecoder {
             gatherDictionaryDoubles(output, dictionary);
         }
         else {
-            int[] indices = decodeIndices(output.length, defLevels, maxDef);
-            applyDictionary(output, dictionary, indices, defLevels, maxDef);
+            gatherDictionaryDoubles(output, dictionary, defLevels, maxDef);
         }
     }
 
@@ -132,8 +130,7 @@ public class RleBitPackingHybridDecoder {
             gatherDictionaryInts(output, dictionary);
         }
         else {
-            int[] indices = decodeIndices(output.length, defLevels, maxDef);
-            applyDictionary(output, dictionary, indices, defLevels, maxDef);
+            gatherDictionaryInts(output, dictionary, defLevels, maxDef);
         }
     }
 
@@ -142,8 +139,7 @@ public class RleBitPackingHybridDecoder {
             gatherDictionaryFloats(output, dictionary);
         }
         else {
-            int[] indices = decodeIndices(output.length, defLevels, maxDef);
-            applyDictionary(output, dictionary, indices, defLevels, maxDef);
+            gatherDictionaryFloats(output, dictionary, defLevels, maxDef);
         }
     }
 
@@ -339,6 +335,132 @@ public class RleBitPackingHybridDecoder {
                 + (total - remaining) + " of " + total + " requested values");
     }
 
+    // Fused null-aware dictionary decode: streams the bit-packed indices in
+    // cache-resident blocks and scatters each into the next present output slot,
+    // skipping null positions. Replaces the decode-into-full-index-array followed
+    // by a separate apply pass; null slots keep their zero-initialised default.
+    // Per-type specialization avoids boxing the dictionary values.
+
+    private void gatherDictionaryLongs(long[] output, long[] dict, int[] defLevels, int maxDef) {
+        int count = countNonNulls(defLevels, maxDef);
+        if (count == 0) {
+            return;
+        }
+        if (bitWidth == 0) {
+            long v = dict[0];
+            for (int i = 0; i < output.length; i++) {
+                if (defLevels[i] == maxDef) {
+                    output[i] = v;
+                }
+            }
+            return;
+        }
+        int[] tmp = GATHER_TMP.get();
+        int outPos = 0;
+        int produced = 0;
+        while (produced < count) {
+            int blk = Math.min(count - produced, GATHER_BLOCK);
+            readInts(tmp, 0, blk);
+            for (int k = 0; k < blk; k++) {
+                while (defLevels[outPos] != maxDef) {
+                    outPos++;
+                }
+                output[outPos++] = dict[tmp[k]];
+            }
+            produced += blk;
+        }
+    }
+
+    private void gatherDictionaryDoubles(double[] output, double[] dict, int[] defLevels, int maxDef) {
+        int count = countNonNulls(defLevels, maxDef);
+        if (count == 0) {
+            return;
+        }
+        if (bitWidth == 0) {
+            double v = dict[0];
+            for (int i = 0; i < output.length; i++) {
+                if (defLevels[i] == maxDef) {
+                    output[i] = v;
+                }
+            }
+            return;
+        }
+        int[] tmp = GATHER_TMP.get();
+        int outPos = 0;
+        int produced = 0;
+        while (produced < count) {
+            int blk = Math.min(count - produced, GATHER_BLOCK);
+            readInts(tmp, 0, blk);
+            for (int k = 0; k < blk; k++) {
+                while (defLevels[outPos] != maxDef) {
+                    outPos++;
+                }
+                output[outPos++] = dict[tmp[k]];
+            }
+            produced += blk;
+        }
+    }
+
+    private void gatherDictionaryInts(int[] output, int[] dict, int[] defLevels, int maxDef) {
+        int count = countNonNulls(defLevels, maxDef);
+        if (count == 0) {
+            return;
+        }
+        if (bitWidth == 0) {
+            int v = dict[0];
+            for (int i = 0; i < output.length; i++) {
+                if (defLevels[i] == maxDef) {
+                    output[i] = v;
+                }
+            }
+            return;
+        }
+        int[] tmp = GATHER_TMP.get();
+        int outPos = 0;
+        int produced = 0;
+        while (produced < count) {
+            int blk = Math.min(count - produced, GATHER_BLOCK);
+            readInts(tmp, 0, blk);
+            for (int k = 0; k < blk; k++) {
+                while (defLevels[outPos] != maxDef) {
+                    outPos++;
+                }
+                output[outPos++] = dict[tmp[k]];
+            }
+            produced += blk;
+        }
+    }
+
+    private void gatherDictionaryFloats(float[] output, float[] dict, int[] defLevels, int maxDef) {
+        int count = countNonNulls(defLevels, maxDef);
+        if (count == 0) {
+            return;
+        }
+        if (bitWidth == 0) {
+            float v = dict[0];
+            for (int i = 0; i < output.length; i++) {
+                if (defLevels[i] == maxDef) {
+                    output[i] = v;
+                }
+            }
+            return;
+        }
+        int[] tmp = GATHER_TMP.get();
+        int outPos = 0;
+        int produced = 0;
+        while (produced < count) {
+            int blk = Math.min(count - produced, GATHER_BLOCK);
+            readInts(tmp, 0, blk);
+            for (int k = 0; k < blk; k++) {
+                while (defLevels[outPos] != maxDef) {
+                    outPos++;
+                }
+                output[outPos++] = dict[tmp[k]];
+            }
+            produced += blk;
+        }
+    }
+
     private int[] decodeIndices(int len, int[] defLevels, int maxDef) {
         int count = defLevels == null ? len : countNonNulls(defLevels, maxDef);
         int[] indices = borrowTemp(count);
@@ -358,62 +480,6 @@ public class RleBitPackingHybridDecoder {
             TEMP_INDICES.set(buf);
         }
         return buf;
-    }
-
-    private void applyDictionary(long[] output, long[] dict, int[] indices, int[] defLevels, int maxDef) {
-        if (defLevels == null) {
-            SIMD_OPS.applyDictionaryLongs(output, dict, indices, output.length);
-        }
-        else {
-            int idx = 0;
-            for (int i = 0; i < output.length; i++) {
-                if (defLevels[i] == maxDef) {
-                    output[i] = dict[indices[idx++]];
-                }
-            }
-        }
-    }
-
-    private void applyDictionary(double[] output, double[] dict, int[] indices, int[] defLevels, int maxDef) {
-        if (defLevels == null) {
-            SIMD_OPS.applyDictionaryDoubles(output, dict, indices, output.length);
-        }
-        else {
-            int idx = 0;
-            for (int i = 0; i < output.length; i++) {
-                if (defLevels[i] == maxDef) {
-                    output[i] = dict[indices[idx++]];
-                }
-            }
-        }
-    }
-
-    private void applyDictionary(int[] output, int[] dict, int[] indices, int[] defLevels, int maxDef) {
-        if (defLevels == null) {
-            SIMD_OPS.applyDictionaryInts(output, dict, indices, output.length);
-        }
-        else {
-            int idx = 0;
-            for (int i = 0; i < output.length; i++) {
-                if (defLevels[i] == maxDef) {
-                    output[i] = dict[indices[idx++]];
-                }
-            }
-        }
-    }
-
-    private void applyDictionary(float[] output, float[] dict, int[] indices, int[] defLevels, int maxDef) {
-        if (defLevels == null) {
-            SIMD_OPS.applyDictionaryFloats(output, dict, indices, output.length);
-        }
-        else {
-            int idx = 0;
-            for (int i = 0; i < output.length; i++) {
-                if (defLevels[i] == maxDef) {
-                    output[i] = dict[indices[idx++]];
-                }
-            }
-        }
     }
 
     private void applyDictionary(byte[][] output, byte[][] dict, int[] indices, int[] defLevels, int maxDef) {
