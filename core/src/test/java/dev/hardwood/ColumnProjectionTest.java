@@ -9,13 +9,18 @@ package dev.hardwood;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
 import dev.hardwood.internal.schema.ProjectedSchema;
 import dev.hardwood.reader.ParquetFileReader;
 import dev.hardwood.reader.RowReader;
+import dev.hardwood.row.PqMap;
 import dev.hardwood.row.PqStruct;
+import dev.hardwood.row.PqVariant;
+import dev.hardwood.row.VariantType;
 import dev.hardwood.schema.ColumnProjection;
 import dev.hardwood.schema.FileSchema;
 
@@ -325,6 +330,63 @@ public class ColumnProjectionTest {
             rows.next();
             assertThat(rows.getInt("id")).isEqualTo(3);
             assertThat(rows.getStruct("address")).isNull();
+        }
+    }
+
+    @Test
+    void mapValueSubFieldProjectionShouldReadKeysAndValue() throws Exception {
+        // map_struct_value_test.parquet: id, people map<string, struct{name, age}>.
+        // Row 0 people = {employee1:{Alice,30}, employee2:{Bob,25}}.
+        //
+        // Projecting only the value sub-field people.key_value.value.age should
+        // read a well-formed map: a Parquet MAP's key column is mandatory, so the
+        // resolver must keep it (parquet-java does — see
+        // parquet-testing-runner MapValueProjectionComparisonTest). Hardwood
+        // currently drops the key and cannot assemble the map, throwing on access.
+        // This test should pass once the projection resolver force-includes a
+        // map's key whenever any part of the map is projected.
+        Path parquetFile = Paths.get("src/test/resources/map_struct_value_test.parquet");
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(parquetFile));
+             RowReader rows = reader.buildRowReader()
+                     .projection(ColumnProjection.columns("people.key_value.value.age")).build()) {
+
+            rows.next();
+            PqMap people = rows.getMap("people");
+            assertThat(people.size()).isEqualTo(2);
+
+            List<String> keys = new ArrayList<>();
+            List<Integer> ages = new ArrayList<>();
+            for (PqMap.Entry entry : people.getEntries()) {
+                keys.add(entry.getStringKey());
+                ages.add(entry.getStructValue().getInt("age"));
+            }
+            assertThat(keys).containsExactlyInAnyOrder("employee1", "employee2");
+            assertThat(ages).containsExactlyInAnyOrder(30, 25);
+        }
+    }
+
+    @Test
+    void variantSubFieldProjectionShouldReassemble() throws Exception {
+        // variant_shredded_test.parquet: var is a shredded Variant
+        // {metadata, value, typed_value:int64}; row 0 holds INT64(42).
+        //
+        // Projecting a single Variant leaf (var.typed_value) should still yield a
+        // reassembled Variant: a Variant must be read atomically (parquet-java
+        // treats it as one column). Hardwood currently returns a null Variant
+        // because metadata/value are left unprojected. This test should pass once
+        // projecting any part of a Variant pulls the whole Variant column.
+        Path parquetFile = Paths.get("src/test/resources/variant_shredded_test.parquet");
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(parquetFile));
+             RowReader rows = reader.buildRowReader()
+                     .projection(ColumnProjection.columns("var.typed_value")).build()) {
+
+            rows.next();
+            PqVariant variant = rows.getVariant("var");
+            assertThat(variant).isNotNull();
+            assertThat(variant.type()).isEqualTo(VariantType.INT64);
+            assertThat(variant.asLong()).isEqualTo(42L);
         }
     }
 
